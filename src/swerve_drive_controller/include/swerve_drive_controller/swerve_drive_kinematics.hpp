@@ -98,7 +98,8 @@ public:
     const std::array<WheelCommand, 4> & wheel_commands,
     const std::array<double, 4> & current_steering_angles,
     double min_steering_angle = -M_PI,
-    double max_steering_angle = M_PI);
+    double max_steering_angle = M_PI,
+    bool enable_steering_limits = true);
 
   /**
    * @brief Update the odometry based on wheel velocities and elapsed time.

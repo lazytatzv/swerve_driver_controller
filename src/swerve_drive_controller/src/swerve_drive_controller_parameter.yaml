@@ -180,9 +180,15 @@ swerve_drive_controller:
     description: "Maximum allowed steering angle in radians (for cable protection). Default: +pi.",
     read_only: true
   }
-  use_stamped_vel: {
+  enable_steering_angle_limits: {
     type: bool,
     default_value: false,
-    description: "Whether to use TwistStamped (true) or Twist (false) for velocity commands. Default false for Foxglove/teleop compatibility.",
+    description: "Whether to enforce physical steering angle limits (cable protection). Default is false for continuous rotation.",
+    read_only: true
+  }
+  use_stamped_vel: {
+    type: bool,
+    default_value: true,
+    description: "Whether to use TwistStamped (true) or Twist (false) for velocity commands.",
     read_only: true
   }

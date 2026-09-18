@@ -17,5 +17,6 @@ teleop_twist_joy_node:
     scale_angular_turbo:
       yaw: 3.5
 
-    enable_button: 4        # L1 ボタン (押している間だけ走行)
+    require_enable_button: false # ボタンを押さずにスティック操作だけで走行可能
+    enable_button: -1
     enable_turbo_button: 5  # R1 ボタン (高速ターボ走行)

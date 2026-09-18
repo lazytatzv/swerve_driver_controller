@@ -24,9 +24,12 @@ swerve_drive_controller:
     trackwidth: 0.40
     wheel_radius: 0.05
 
-    # ケーブル保護のための角度制限（例: ±90度）
-    min_steering_angle: -1.57079632679
-    max_steering_angle:  1.57079632679
+    # 無限回転モード（制限なし continuous: スリップリング仕様）
+    enable_steering_angle_limits: false
+    min_steering_angle: -3.141592653589793
+    max_steering_angle:  3.141592653589793
+
+    use_stamped_vel: false
 
     cmd_vel_timeout: 0.5
     odom: "odom"

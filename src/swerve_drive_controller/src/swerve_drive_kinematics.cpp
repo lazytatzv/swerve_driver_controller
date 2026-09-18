@@ -82,7 +82,8 @@ std::array<WheelCommand, 4> SwerveDriveKinematics::optimize_wheel_commands(
   const std::array<WheelCommand, 4> & wheel_commands,
   const std::array<double, 4> & current_steering_angles,
   double min_steering_angle,
-  double max_steering_angle)
+  double max_steering_angle,
+  bool enable_steering_limits)
 {
   if (min_steering_angle > max_steering_angle)
   {
@@ -91,71 +92,113 @@ std::array<WheelCommand, 4> SwerveDriveKinematics::optimize_wheel_commands(
 
   std::array<WheelCommand, 4> optimized_commands = wheel_commands;
 
-  const double range = max_steering_angle - min_steering_angle;
-  // Hysteresis margin: ~5 deg (0.087 rad), or at most 5% of allowable steering range
-  const double hysteresis = std::min(0.087, range * 0.05);
+  // Hysteresis margin (~20 deg / 0.35 rad) to prevent inversion thrashing around 90 deg
+  constexpr double hysteresis = 0.35;
+  constexpr double min_speed_threshold = 0.02;  // m/s deadband
 
   for (std::size_t i = 0; i < 4; i++)
   {
-    double target_A = angles::normalize_angle(wheel_commands[i].steering_angle);
-    double target_B = angles::normalize_angle(wheel_commands[i].steering_angle + M_PI);
+    double curr = current_steering_angles[i];
+    if (enable_steering_limits)
+    {
+      curr = angles::normalize_angle(curr);
+    }
+    double desired = wheel_commands[i].steering_angle;
+    double speed = wheel_commands[i].drive_velocity;
+    double angular_speed = wheel_commands[i].drive_angular_velocity;
 
-    // Margin-extended boundaries for chattering prevention
-    bool in_range_A = (target_A >= min_steering_angle - hysteresis) &&
-                      (target_A <= max_steering_angle + hysteresis);
-    bool in_range_B = (target_B >= min_steering_angle - hysteresis) &&
-                      (target_B <= max_steering_angle + hysteresis);
+    // If commanded wheel speed is negligible (near stop or ICR passing over module),
+    // keep the current steering angle to avoid erratic angle jitter
+    if (std::abs(speed) < min_speed_threshold)
+    {
+      optimized_commands[i].steering_angle = curr;
+      optimized_commands[i].drive_velocity = 0.0;
+      optimized_commands[i].drive_angular_velocity = 0.0;
+      continue;
+    }
 
-    double current_angle = current_steering_angles[i];
-    double dist_A = std::abs(angles::shortest_angular_distance(current_angle, target_A));
-    double dist_B = std::abs(angles::shortest_angular_distance(current_angle, target_B));
+    // Shortest angular difference from current steering angle to desired heading in [-pi, pi]
+    double diff = angles::shortest_angular_distance(curr, desired);
+
+    // Option A: Direct steering towards desired angle
+    double target_A = curr + diff;
+    double rot_A = std::abs(diff);
+
+    // Option B: Invert drive wheel (reverse drive) and steer 180 degrees away
+    double diff_B = (diff > 0.0) ? (diff - M_PI) : (diff + M_PI);
+    double target_B = curr + diff_B;
+    double rot_B = std::abs(diff_B);
+
+    // Soft limit penalty: Heavily penalize steering setpoints creeping towards the physical
+    // +/- 180 deg (pi) mechanical boundaries. In bounded mode, any 2D ground velocity
+    // can be achieved with steering angles within [-pi/2, +pi/2] using drive inversion.
+    // Penalizing angles beyond safe threshold (~100 deg) keeps the module safely centered.
+    double limit_penalty_A = 0.0;
+    double limit_penalty_B = 0.0;
+    if (enable_steering_limits)
+    {
+      constexpr double safe_angle_limit = 1.7453;  // ~100 degrees (1.745 rad)
+      limit_penalty_A = std::max(0.0, std::abs(target_A) - safe_angle_limit) * 2.5;
+      limit_penalty_B = std::max(0.0, std::abs(target_B) - safe_angle_limit) * 2.5;
+    }
 
     // Apply hysteresis cost to discourage rapid switching between Direct (A) and Inverted (B)
-    bool was_inverted = previous_inversion_[i];
-    if (was_inverted)
-    {
-      dist_A += hysteresis;
-    }
-    else
-    {
-      dist_B += hysteresis;
-    }
+    double cost_A = rot_A + (previous_inversion_[i] ? hysteresis : 0.0) + limit_penalty_A;
+    double cost_B = rot_B + (previous_inversion_[i] ? 0.0 : hysteresis) + limit_penalty_B;
 
     bool choose_B = false;
 
-    if (in_range_A && in_range_B)
+    if (!enable_steering_limits)
     {
-      // Both modes are feasible within limits: pick the one with lower movement cost
-      choose_B = (dist_B < dist_A);
-    }
-    else if (in_range_B && !in_range_A)
-    {
-      // Only inverted angle is within physical limits
-      choose_B = true;
-    }
-    else if (in_range_A && !in_range_B)
-    {
-      // Only direct angle is within physical limits
-      choose_B = false;
+      // Continuous rotation mode: Modules can rotate infinitely without limits.
+      // Choose whichever requires significantly less rotation (|diff| <= 90 deg).
+      choose_B = (cost_B < cost_A);
     }
     else
     {
-      // Neither is within limits (e.g. angle range is extremely restricted)
-      // Pick the closest to current angle and clamp to safety limit
-      choose_B = (dist_B < dist_A);
+      // Bounded steering mode (physical cable protection)
+      const double eps = 1e-4;
+      bool in_range_A = (target_A >= min_steering_angle - eps) &&
+                        (target_A <= max_steering_angle + eps);
+      bool in_range_B = (target_B >= min_steering_angle - eps) &&
+                        (target_B <= max_steering_angle + eps);
+
+      if (in_range_A && in_range_B)
+      {
+        choose_B = (cost_B < cost_A);
+      }
+      else if (in_range_B && !in_range_A)
+      {
+        choose_B = true;
+      }
+      else if (in_range_A && !in_range_B)
+      {
+        choose_B = false;
+      }
+      else
+      {
+        choose_B = (cost_B < cost_A);
+      }
     }
 
     // Update inversion history for next cycle
     previous_inversion_[i] = choose_B;
 
-    // Pick target angle and guarantee it strictly NEVER exceeds physical limits
     double final_steering_angle = choose_B ? target_B : target_A;
-    final_steering_angle = std::clamp(final_steering_angle, min_steering_angle, max_steering_angle);
+    if (enable_steering_limits)
+    {
+      final_steering_angle = std::clamp(final_steering_angle, min_steering_angle, max_steering_angle);
+    }
 
     if (choose_B)
     {
-      optimized_commands[i].drive_velocity = -wheel_commands[i].drive_velocity;
-      optimized_commands[i].drive_angular_velocity = -wheel_commands[i].drive_angular_velocity;
+      optimized_commands[i].drive_velocity = -speed;
+      optimized_commands[i].drive_angular_velocity = -angular_speed;
+    }
+    else
+    {
+      optimized_commands[i].drive_velocity = speed;
+      optimized_commands[i].drive_angular_velocity = angular_speed;
     }
 
     optimized_commands[i].steering_angle = final_steering_angle;

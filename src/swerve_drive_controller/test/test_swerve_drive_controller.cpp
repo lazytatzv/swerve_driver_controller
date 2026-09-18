@@ -437,6 +437,164 @@ TEST(SwerveDriveKinematicsTest, test_angle_limits_and_hysteresis)
   }
 }
 
+TEST(SwerveDriveKinematicsTest, test_continuous_rotation_no_flips)
+{
+  SwerveDriveKinematics kinematics;
+  kinematics.calculate_wheel_position(0.5, 0.4);
+
+  std::array<double, 4> current_angles = {{0.0, 0.0, 0.0, 0.0}};
+
+  // Rotate stick continuously for 2 full revolutions (0 to 4*pi) in 0.1 rad increments
+  for (int step = 1; step <= 63; ++step)
+  {
+    double desired_angle = angles::normalize_angle(step * 0.1);
+    std::array<WheelCommand, 4> cmds;
+    for (int i = 0; i < 4; ++i)
+    {
+      cmds[i] = {desired_angle, 1.0, 1.0 / 0.05};
+    }
+
+    auto opt_cmds = kinematics.optimize_wheel_commands(
+      cmds, current_angles, -M_PI, M_PI, false /* enable_steering_limits = false */);
+
+    for (int i = 0; i < 4; ++i)
+    {
+      // No 180-degree jumps during continuous rotation
+      double jump = std::abs(opt_cmds[i].steering_angle - current_angles[i]);
+      EXPECT_LT(jump, M_PI_2);
+      EXPECT_GT(opt_cmds[i].drive_velocity, 0.0);
+      current_angles[i] = opt_cmds[i].steering_angle;
+    }
+  }
+
+  // After 2 revolutions, current angle should have accumulated past 2*pi smoothly
+  for (int i = 0; i < 4; ++i)
+  {
+    EXPECT_GT(current_angles[i], 6.0);
+  }
+}
+
+TEST(SwerveDriveKinematicsTest, test_small_radius_circling_stability)
+{
+  SwerveDriveKinematics kinematics;
+  kinematics.calculate_wheel_position(0.5, 0.4);
+
+  std::array<double, 4> current_angles = {{0.0, 0.0, 0.0, 0.0}};
+
+  // Robot driving in a small radius circle: vx=0.1, vy=0.0, wz=1.5
+  for (int step = 0; step < 50; ++step)
+  {
+    auto wheel_cmds = kinematics.compute_wheel_commands(0.1, 0.0, 1.5, 0.05);
+    auto opt_cmds = kinematics.optimize_wheel_commands(
+      wheel_cmds, current_angles, -M_PI, M_PI, false);
+
+    for (int i = 0; i < 4; ++i)
+    {
+      EXPECT_TRUE(std::isfinite(opt_cmds[i].steering_angle));
+      EXPECT_TRUE(std::isfinite(opt_cmds[i].drive_velocity));
+      current_angles[i] = opt_cmds[i].steering_angle;
+    }
+  }
+}
+
+TEST(SwerveDriveKinematicsTest, test_bounded_plus_minus_pi_limits)
+{
+  SwerveDriveKinematics kinematics;
+  kinematics.calculate_wheel_position(0.5, 0.4);
+
+  std::array<double, 4> current_angles = {{0.0, 0.0, 0.0, 0.0}};
+
+  // Rotate stick full 360 degrees in 72 steps with strict [-pi, pi] limits
+  for (int step = 0; step <= 72; ++step)
+  {
+    double theta = step * (2.0 * M_PI / 72.0);
+    double desired_angle = std::atan2(std::sin(theta), std::cos(theta));
+    std::array<WheelCommand, 4> cmds;
+    for (int i = 0; i < 4; ++i)
+    {
+      cmds[i] = {desired_angle, 1.5, 1.5 / 0.05};
+    }
+
+    auto opt_cmds = kinematics.optimize_wheel_commands(
+      cmds, current_angles, -M_PI, M_PI, true /* enable_steering_limits = true */);
+
+    for (int i = 0; i < 4; ++i)
+    {
+      // Angle MUST strictly stay within [-pi, pi]
+      EXPECT_GE(opt_cmds[i].steering_angle, -M_PI - 1e-4);
+      EXPECT_LE(opt_cmds[i].steering_angle, M_PI + 1e-4);
+
+      // Physical ground velocity vector MUST match desired velocity vector
+      double vx_cmd = opt_cmds[i].drive_velocity * std::cos(opt_cmds[i].steering_angle);
+      double vy_cmd = opt_cmds[i].drive_velocity * std::sin(opt_cmds[i].steering_angle);
+      double vx_des = 1.5 * std::cos(desired_angle);
+      double vy_des = 1.5 * std::sin(desired_angle);
+      EXPECT_NEAR(vx_cmd, vx_des, 1e-3);
+      EXPECT_NEAR(vy_cmd, vy_des, 1e-3);
+
+      current_angles[i] = opt_cmds[i].steering_angle;
+    }
+  }
+}
+
+TEST(SwerveDriveKinematicsTest, test_tight_turn_bounded_smoothness)
+{
+  SwerveDriveKinematics kinematics;
+  kinematics.calculate_wheel_position(0.5, 0.4);
+
+  std::array<double, 4> current_angles = {{0.0, 0.0, 0.0, 0.0}};
+
+  // 1. Driving in tight circle with bounded +/- pi limits (vx=0.1, vy=0.0, wz=2.0)
+  for (int step = 0; step < 50; ++step)
+  {
+    auto raw_cmds = kinematics.compute_wheel_commands(0.1, 0.0, 2.0, 0.05);
+    auto opt_cmds = kinematics.optimize_wheel_commands(
+      raw_cmds, current_angles, -M_PI, M_PI, true);
+
+    for (int i = 0; i < 4; ++i)
+    {
+      EXPECT_GE(opt_cmds[i].steering_angle, -M_PI - 1e-4);
+      EXPECT_LE(opt_cmds[i].steering_angle, M_PI + 1e-4);
+
+      if (step > 0)
+      {
+        // No large flips (> 60 deg) during execution of the turn
+        double jump = std::abs(angles::shortest_angular_distance(current_angles[i], opt_cmds[i].steering_angle));
+        EXPECT_LT(jump, M_PI / 3.0);
+      }
+      current_angles[i] = opt_cmds[i].steering_angle;
+    }
+  }
+
+  // 2. Transition: Straight forward (vx=0.3, wz=0.0) -> Tight turn (vx=0.05, wz=2.5) -> Straight forward
+  current_angles.fill(0.0);
+  kinematics.reset_inversion_state();
+
+  for (int step = 0; step < 60; ++step)
+  {
+    double phase = std::sin(step * M_PI / 59.0);
+    double vx = 0.3 * (1.0 - phase) + 0.05 * phase;
+    double wz = 2.5 * phase;
+
+    auto raw_cmds = kinematics.compute_wheel_commands(vx, 0.0, wz, 0.05);
+    auto opt_cmds = kinematics.optimize_wheel_commands(
+      raw_cmds, current_angles, -M_PI, M_PI, true);
+
+    for (int i = 0; i < 4; ++i)
+    {
+      EXPECT_GE(opt_cmds[i].steering_angle, -M_PI - 1e-4);
+      EXPECT_LE(opt_cmds[i].steering_angle, M_PI + 1e-4);
+
+      if (step > 0)
+      {
+        double jump = std::abs(angles::shortest_angular_distance(current_angles[i], opt_cmds[i].steering_angle));
+        EXPECT_LT(jump, M_PI / 3.0);
+      }
+      current_angles[i] = opt_cmds[i].steering_angle;
+    }
+  }
+}
+
 int main(int argc, char ** argv)
 {
   ::testing::InitGoogleTest(&argc, argv);

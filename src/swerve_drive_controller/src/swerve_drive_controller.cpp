@@ -412,8 +412,8 @@ controller_interface::return_type SwerveController::update_and_write_commands(
     return controller_interface::return_type::OK;
   }
 
-  auto wheel_command = swerveDriveKinematics_.compute_wheel_commands(
-    linear_x_cmd, linear_y_cmd, angular_cmd, params_.wheel_radius);
+  const bool is_stop = (std::fabs(linear_x_cmd) < EPS) && (std::fabs(linear_y_cmd) < EPS) &&
+                       (std::fabs(angular_cmd) < EPS);
 
   std::array<double, 4> current_steering_angles{};
   for (std::size_t i = 0; i < 4; ++i)
@@ -428,10 +428,29 @@ controller_interface::return_type SwerveController::update_and_write_commands(
     }
   }
 
-  wheel_command =
-    swerveDriveKinematics_.optimize_wheel_commands(
-      wheel_command, current_steering_angles,
-      params_.min_steering_angle, params_.max_steering_angle);
+  std::array<WheelCommand, 4> wheel_command{};
+  if (is_stop)
+  {
+    for (std::size_t i = 0; i < 4; ++i)
+    {
+      wheel_command[i].drive_velocity = 0.0;
+      wheel_command[i].drive_angular_velocity = 0.0;
+      wheel_command[i].steering_angle = previous_steering_angles_[i];
+    }
+  }
+  else
+  {
+    wheel_command = swerveDriveKinematics_.compute_wheel_commands(
+      linear_x_cmd, linear_y_cmd, angular_cmd, params_.wheel_radius);
+
+    // Optimize against previous commanded reference angles (not lagging feedback) to prevent
+    // mid-maneuver reversals caused by actuator tracking latency
+    wheel_command =
+      swerveDriveKinematics_.optimize_wheel_commands(
+        wheel_command, previous_steering_angles_,
+        params_.min_steering_angle, params_.max_steering_angle,
+        params_.enable_steering_angle_limits);
+  }
 
   std::vector<std::tuple<WheelCommand &, double, std::string>> wheel_data = {
     {wheel_command[0], params_.front_left_velocity_threshold / params_.wheel_radius,
@@ -443,35 +462,24 @@ controller_interface::return_type SwerveController::update_and_write_commands(
     {wheel_command[3], params_.rear_right_velocity_threshold / params_.wheel_radius,
      "rear_right_wheel"}};
 
-  for (const auto & [wheel_command_, threshold, label] : wheel_data)
+  for (auto & [wheel_command_, threshold, label] : wheel_data)
   {
-    if (wheel_command_.drive_velocity > threshold)
+    wheel_command_.drive_velocity = std::clamp(wheel_command_.drive_velocity, -threshold, threshold);
+    if (params_.wheel_radius > 0.0)
     {
-      wheel_command_.drive_velocity = threshold;
+      wheel_command_.drive_angular_velocity = wheel_command_.drive_velocity / params_.wheel_radius;
     }
   }
 
-  const double min_steering_error = M_PI / 6.0;  // 30 degrees
   for (std::size_t i = 0; i < 4; i++)
   {
     double steering_error = std::abs(
       angles::shortest_angular_distance(
         current_steering_angles[i], wheel_command[i].steering_angle));
 
-    double velocity_scale = 1.0;
-    if (steering_error > min_steering_error)
-    {
-      if (steering_error >= 1.5608)  // ~89.5 degrees
-      {
-        // cos(1.5608) = 0.01
-        velocity_scale = 0.01 / std::cos(min_steering_error);
-      }
-      else
-      {
-        // Scale velocity based on steering error using cosine function
-        velocity_scale = std::cos(steering_error) / std::cos(min_steering_error);
-      }
-    }
+    // Smooth continuous velocity scaling based on cosine of steering error:
+    // Full speed when aligned (error=0), smoothly reduces to 0 when wheels are perpendicular (90 deg).
+    double velocity_scale = std::max(0.0, std::cos(steering_error));
 
     // Apply velocity scaling
     wheel_command[i].drive_velocity *= velocity_scale;
@@ -487,8 +495,7 @@ controller_interface::return_type SwerveController::update_and_write_commands(
         wheel_joint_names[i]);
     }
 
-    const bool is_stop = (std::fabs(linear_x_cmd) < EPS) && (std::fabs(linear_y_cmd) < EPS) &&
-                         (std::fabs(angular_cmd) < EPS);
+
 
     if (is_stop)
     {
