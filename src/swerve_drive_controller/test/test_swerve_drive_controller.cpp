@@ -406,6 +406,37 @@ TEST_F(SwerveDriveControllerTest, command_with_zero_timestamp_is_accepted_with_w
   executor.cancel();
 }
 
+TEST(SwerveDriveKinematicsTest, test_angle_limits_and_hysteresis)
+{
+  SwerveDriveKinematics kinematics;
+  kinematics.calculate_wheel_position(0.5, 0.4);
+
+  // Wheel commands requesting backwards motion (theta = pi, vel = 2.0 m/s)
+  std::array<WheelCommand, 4> cmds;
+  for (int i = 0; i < 4; ++i)
+  {
+    cmds[i] = {M_PI, 2.0, 2.0 / 0.05};
+  }
+
+  std::array<double, 4> current_angles = {0.0, 0.0, 0.0, 0.0};
+  // Limit to +/- 90 degrees (+/- 1.5708 rad)
+  double min_limit = -M_PI_2;
+  double max_limit = M_PI_2;
+
+  auto opt_cmds = kinematics.optimize_wheel_commands(cmds, current_angles, min_limit, max_limit);
+
+  for (int i = 0; i < 4; ++i)
+  {
+    // The angle must be strictly within [-pi/2, pi/2]
+    EXPECT_GE(opt_cmds[i].steering_angle, min_limit - 1e-4);
+    EXPECT_LE(opt_cmds[i].steering_angle, max_limit + 1e-4);
+    // Reversed angle for pi should be 0.0
+    EXPECT_NEAR(opt_cmds[i].steering_angle, 0.0, 1e-3);
+    // Velocity must be inverted (-2.0 m/s)
+    EXPECT_NEAR(opt_cmds[i].drive_velocity, -2.0, 1e-3);
+  }
+}
+
 int main(int argc, char ** argv)
 {
   ::testing::InitGoogleTest(&argc, argv);

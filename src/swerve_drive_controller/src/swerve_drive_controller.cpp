@@ -566,6 +566,7 @@ bool SwerveController::reset()
   zero_twist.twist.angular.z = 0.0;
   command_msg_ = zero_twist;
   received_velocity_msg_.set(zero_twist);
+  swerveDriveKinematics_.reset_inversion_state();
   is_halted_ = false;
   return true;
 }

@@ -112,9 +112,15 @@ public:
     const std::array<double, 4> & wheel_velocities_, const std::array<double, 4> & steering_angles_,
     double dt);
 
+  /**
+   * @brief Reset inversion state history (used for hysteresis).
+   */
+  void reset_inversion_state();
+
 private:
   std::array<std::pair<double, double>, 4> wheel_positions_;  // Wheel Positions
   OdometryState odometry_;                                    // Current Odometry of the robot
+  std::array<bool, 4> previous_inversion_{false, false, false, false};  // History for chattering prevention
 };
 }  // namespace swerve_drive_controller
 
