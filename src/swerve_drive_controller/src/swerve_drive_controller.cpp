@@ -53,7 +53,7 @@ Wheel::Wheel(
 {
 }
 
-void Wheel::set_velocity(double velocity) { velocity_.get().set_value(velocity); }
+void Wheel::set_velocity(double velocity) { static_cast<void>(velocity_.get().set_value(velocity)); }
 
 double Wheel::get_feedback() { return Wheel::feedback_.get().get_optional().value(); }
 
@@ -64,7 +64,7 @@ Axle::Axle(
 {
 }
 
-void Axle::set_position(double position) { position_.get().set_value(position); }
+void Axle::set_position(double position) { static_cast<void>(position_.get().set_value(position)); }
 
 double Axle::get_feedback() { return Axle::feedback_.get().get_optional().value(); }
 
@@ -199,25 +199,60 @@ CallbackReturn SwerveController::on_configure(const rclcpp_lifecycle::State & /*
     command_msg_ = empty_twist;
     received_velocity_msg_.set(empty_twist);
 
-    velocity_command_subscriber_ = get_node()->create_subscription<TwistStamped>(
-      DEFAULT_COMMAND_TOPIC, rclcpp::SystemDefaultsQoS(),
-      [this, logger](const std::shared_ptr<TwistStamped> msg) -> void
-      {
-        if (!subscriber_is_active_)
+    if (params_.use_stamped_vel)
+    {
+      velocity_command_subscriber_ = get_node()->create_subscription<TwistStamped>(
+        DEFAULT_COMMAND_TOPIC, rclcpp::SystemDefaultsQoS(),
+        [this, logger](const std::shared_ptr<TwistStamped> msg) -> void
         {
-          RCLCPP_WARN(logger, "Can't accept new commands. subscriber is inactive");
-          return;
-        }
-        if ((msg->header.stamp.sec == 0) && (msg->header.stamp.nanosec == 0))
-        {
-          RCLCPP_WARN_ONCE(
-            logger,
-            "Received TwistStamped with zero timestamp, setting it to current "
-            "time, this message will only be shown once");
-          msg->header.stamp = get_node()->get_clock()->now();
-        }
-        received_velocity_msg_.try_set(*msg);
-      });
+          if (!subscriber_is_active_)
+          {
+            RCLCPP_WARN(logger, "Can't accept new commands. subscriber is inactive");
+            return;
+          }
+          if ((msg->header.stamp.sec == 0) && (msg->header.stamp.nanosec == 0))
+          {
+            RCLCPP_WARN_ONCE(
+              logger,
+              "Received TwistStamped with zero timestamp, setting it to current "
+              "time, this message will only be shown once");
+            msg->header.stamp = get_node()->get_clock()->now();
+          }
+          received_velocity_msg_.try_set(*msg);
+        });
+
+      velocity_command_unstamped_subscriber_ =
+        get_node()->create_subscription<geometry_msgs::msg::Twist>(
+          DEFAULT_COMMAND_UNSTAMPED_TOPIC, rclcpp::SystemDefaultsQoS(),
+          [this, logger](const std::shared_ptr<geometry_msgs::msg::Twist> msg) -> void
+          {
+            if (!subscriber_is_active_)
+            {
+              return;
+            }
+            TwistStamped stamped;
+            stamped.header.stamp = get_node()->get_clock()->now();
+            stamped.twist = *msg;
+            received_velocity_msg_.try_set(stamped);
+          });
+    }
+    else
+    {
+      velocity_command_unstamped_subscriber_ =
+        get_node()->create_subscription<geometry_msgs::msg::Twist>(
+          DEFAULT_COMMAND_TOPIC, rclcpp::SystemDefaultsQoS(),
+          [this, logger](const std::shared_ptr<geometry_msgs::msg::Twist> msg) -> void
+          {
+            if (!subscriber_is_active_)
+            {
+              return;
+            }
+            TwistStamped stamped;
+            stamped.header.stamp = get_node()->get_clock()->now();
+            stamped.twist = *msg;
+            received_velocity_msg_.try_set(stamped);
+          });
+    }
 
     odometry_publisher_ = get_node()->create_publisher<nav_msgs::msg::Odometry>(
       DEFAULT_ODOMETRY_TOPIC, rclcpp::SystemDefaultsQoS());
@@ -558,6 +593,7 @@ bool SwerveController::reset()
 {
   subscriber_is_active_ = false;
   velocity_command_subscriber_.reset();
+  velocity_command_unstamped_subscriber_.reset();
 
   TwistStamped zero_twist;
   zero_twist.header.stamp = get_node()->get_clock()->now();

@@ -418,7 +418,7 @@ TEST(SwerveDriveKinematicsTest, test_angle_limits_and_hysteresis)
     cmds[i] = {M_PI, 2.0, 2.0 / 0.05};
   }
 
-  std::array<double, 4> current_angles = {0.0, 0.0, 0.0, 0.0};
+  std::array<double, 4> current_angles = {{0.0, 0.0, 0.0, 0.0}};
   // Limit to +/- 90 degrees (+/- 1.5708 rad)
   double min_limit = -M_PI_2;
   double max_limit = M_PI_2;

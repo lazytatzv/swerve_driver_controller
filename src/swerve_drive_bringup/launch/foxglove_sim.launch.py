@@ -1,13 +1,14 @@
 import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, ExecuteProcess, RegisterEventHandler
+from launch.actions import DeclareLaunchArgument, ExecuteProcess, RegisterEventHandler, SetEnvironmentVariable
 from launch.event_handlers import OnProcessExit
 from launch.substitutions import Command, FindExecutable, LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
 def generate_launch_description():
+    set_rmw = SetEnvironmentVariable('RMW_IMPLEMENTATION', 'rmw_fastrtps_cpp')
     pkg_share = FindPackageShare('swerve_drive_bringup')
 
     # Path to URDF xacro
@@ -49,7 +50,11 @@ def generate_launch_description():
     swerve_drive_controller_spawner = Node(
         package='controller_manager',
         executable='spawner',
-        arguments=['swerve_drive_controller', '--controller-manager', '/controller_manager'],
+        arguments=[
+            'swerve_drive_controller',
+            '--param-file', controller_config,
+            '--controller-manager', '/controller_manager',
+        ],
     )
 
     # 5. foxglove_bridge node
@@ -65,6 +70,28 @@ def generate_launch_description():
         }],
     )
 
+    # 6. Joystick teleop nodes (PS5 controller)
+    joy_config = PathJoinSubstitution([pkg_share, 'config', 'teleop_ps5.yaml'])
+    joy_node = Node(
+        package='joy',
+        executable='joy_node',
+        name='joy_node',
+        parameters=[{
+            'dev': '/dev/input/js0',
+            'deadzone': 0.05,
+            'autorepeat_rate': 20.0,
+        }],
+    )
+    teleop_twist_joy_node = Node(
+        package='teleop_twist_joy',
+        executable='teleop_node',
+        name='teleop_twist_joy_node',
+        parameters=[joy_config],
+        remappings=[
+            ('/cmd_vel', '/swerve_drive_controller/cmd_vel'),
+        ],
+    )
+
     # Delay swerve_drive_controller until joint_state_broadcaster starts
     delay_swerve_controller_spawner = RegisterEventHandler(
         event_handler=OnProcessExit(
@@ -74,9 +101,12 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
+        set_rmw,
         robot_state_publisher_node,
         ros2_control_node,
         joint_state_broadcaster_spawner,
         delay_swerve_controller_spawner,
         foxglove_bridge_node,
+        joy_node,
+        teleop_twist_joy_node,
     ])

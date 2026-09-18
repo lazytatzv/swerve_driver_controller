@@ -4,7 +4,7 @@
   <name>swerve_drive_bringup</name>
   <version>0.0.1</version>
   <description>Bringup and Foxglove simulation package for swerve drive</description>
-  <maintainer email="rodep@local">rodep</maintainer>
+  <maintainer email="rodep@example.com">rodep</maintainer>
   <license>Apache-2.0</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>

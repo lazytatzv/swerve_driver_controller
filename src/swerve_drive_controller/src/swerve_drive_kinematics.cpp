@@ -19,7 +19,7 @@ namespace swerve_drive_controller
 
 SwerveDriveKinematics::SwerveDriveKinematics()
 : odometry_{0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
-  previous_inversion_{false, false, false, false}
+  previous_inversion_{{false, false, false, false}}
 {}
 
 void SwerveDriveKinematics::reset_inversion_state()

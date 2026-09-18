@@ -215,6 +215,8 @@ protected:
   // Topic Subscription
   bool subscriber_is_active_ = false;
   rclcpp::Subscription<TwistStamped>::SharedPtr velocity_command_subscriber_ = nullptr;
+  rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr
+    velocity_command_unstamped_subscriber_ = nullptr;
   realtime_tools::RealtimeThreadSafeBox<TwistStamped> received_velocity_msg_;
   TwistStamped command_msg_;
   std::shared_ptr<rclcpp::Publisher<nav_msgs::msg::Odometry>> odometry_publisher_ = nullptr;
