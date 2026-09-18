@@ -1,0 +1,182 @@
+<?xml version="1.0"?>
+<robot name="swerve_robot" xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <!-- Constants -->
+  <xacro:property name="wheelbase" value="0.50"/>
+  <xacro:property name="trackwidth" value="0.40"/>
+  <xacro:property name="wheel_radius" value="0.05"/>
+  <xacro:property name="wheel_width" value="0.04"/>
+
+  <!-- Materials -->
+  <material name="chassis_mat">
+    <color rgba="0.2 0.25 0.3 0.85"/>
+  </material>
+  <material name="arrow_mat">
+    <color rgba="0.1 0.8 0.3 1.0"/>
+  </material>
+  <material name="axle_mat">
+    <color rgba="0.9 0.6 0.1 1.0"/>
+  </material>
+  <material name="wheel_mat">
+    <color rgba="0.1 0.1 0.1 1.0"/>
+  </material>
+
+  <!-- base_footprint -->
+  <link name="base_footprint"/>
+
+  <joint name="base_footprint_joint" type="fixed">
+    <parent link="base_footprint"/>
+    <child link="base_link"/>
+    <origin xyz="0 0 ${wheel_radius + 0.04}" rpy="0 0 0"/>
+  </joint>
+
+  <!-- base_link (Chassis) -->
+  <link name="base_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.60 0.50 0.04"/>
+      </geometry>
+      <material name="chassis_mat"/>
+    </visual>
+    <!-- Forward Direction Pointer Arrow -->
+    <visual>
+      <origin xyz="0.20 0 0.03" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.15 0.04 0.02"/>
+      </geometry>
+      <material name="arrow_mat"/>
+    </visual>
+    <collision>
+      <geometry>
+        <box size="0.60 0.50 0.04"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <mass value="15.0"/>
+      <origin xyz="0 0 0"/>
+      <inertia ixx="0.3" ixy="0" ixz="0" iyy="0.4" iyz="0" izz="0.6"/>
+    </inertial>
+  </link>
+
+  <!-- Macro for Swerve Module -->
+  <xacro:macro name="swerve_module" params="prefix x_pos y_pos">
+    <!-- Steering Axle Link -->
+    <link name="${prefix}_axle_link">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <cylinder radius="0.03" length="0.04"/>
+        </geometry>
+        <material name="axle_mat"/>
+      </visual>
+      <inertial>
+        <mass value="0.5"/>
+        <origin xyz="0 0 0"/>
+        <inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.001"/>
+      </inertial>
+    </link>
+
+    <!-- Steering Joint (Rotates around Z) -->
+    <joint name="${prefix}_axle_joint" type="revolute">
+      <parent link="base_link"/>
+      <child link="${prefix}_axle_link"/>
+      <origin xyz="${x_pos} ${y_pos} -0.02" rpy="0 0 0"/>
+      <axis xyz="0 0 1"/>
+      <limit lower="-3.14159" upper="3.14159" effort="10.0" velocity="10.0"/>
+    </joint>
+
+    <!-- Wheel Link -->
+    <link name="${prefix}_wheel_link">
+      <visual>
+        <origin xyz="0 0 0" rpy="${pi/2} 0 0"/>
+        <geometry>
+          <cylinder radius="${wheel_radius}" length="${wheel_width}"/>
+        </geometry>
+        <material name="wheel_mat"/>
+      </visual>
+      <collision>
+        <origin xyz="0 0 0" rpy="${pi/2} 0 0"/>
+        <geometry>
+          <cylinder radius="${wheel_radius}" length="${wheel_width}"/>
+        </geometry>
+      </collision>
+      <inertial>
+        <mass value="1.0"/>
+        <origin xyz="0 0 0"/>
+        <inertia ixx="0.002" ixy="0" ixz="0" iyy="0.003" iyz="0" izz="0.002"/>
+      </inertial>
+    </link>
+
+    <!-- Drive Wheel Joint (Rotates around Y) -->
+    <joint name="${prefix}_wheel_joint" type="continuous">
+      <parent link="${prefix}_axle_link"/>
+      <child link="${prefix}_wheel_link"/>
+      <origin xyz="0 0 -${wheel_radius}" rpy="0 0 0"/>
+      <axis xyz="0 1 0"/>
+    </joint>
+  </xacro:macro>
+
+  <!-- Instantiate 4 Modules -->
+  <!-- Front Left -->
+  <xacro:swerve_module prefix="fl" x_pos="${wheelbase/2.0}" y_pos="${trackwidth/2.0}"/>
+  <!-- Front Right -->
+  <xacro:swerve_module prefix="fr" x_pos="${wheelbase/2.0}" y_pos="-${trackwidth/2.0}"/>
+  <!-- Rear Left -->
+  <xacro:swerve_module prefix="rl" x_pos="-${wheelbase/2.0}" y_pos="${trackwidth/2.0}"/>
+  <!-- Rear Right -->
+  <xacro:swerve_module prefix="rr" x_pos="-${wheelbase/2.0}" y_pos="-${trackwidth/2.0}"/>
+
+  <!-- ros2_control description using Mock GenericSystem hardware -->
+  <ros2_control name="SwerveMockSystem" type="system">
+    <hardware>
+      <plugin>mock_components/GenericSystem</plugin>
+      <param name="calculate_dynamics">true</param>
+    </hardware>
+
+    <!-- Front Left -->
+    <joint name="fl_axle_joint">
+      <command_interface name="position"/>
+      <state_interface name="position"><param name="initial_value">0.0</param></state_interface>
+    </joint>
+    <joint name="fl_wheel_joint">
+      <command_interface name="velocity"/>
+      <state_interface name="velocity"><param name="initial_value">0.0</param></state_interface>
+      <state_interface name="position"><param name="initial_value">0.0</param></state_interface>
+    </joint>
+
+    <!-- Front Right -->
+    <joint name="fr_axle_joint">
+      <command_interface name="position"/>
+      <state_interface name="position"><param name="initial_value">0.0</param></state_interface>
+    </joint>
+    <joint name="fr_wheel_joint">
+      <command_interface name="velocity"/>
+      <state_interface name="velocity"><param name="initial_value">0.0</param></state_interface>
+      <state_interface name="position"><param name="initial_value">0.0</param></state_interface>
+    </joint>
+
+    <!-- Rear Left -->
+    <joint name="rl_axle_joint">
+      <command_interface name="position"/>
+      <state_interface name="position"><param name="initial_value">0.0</param></state_interface>
+    </joint>
+    <joint name="rl_wheel_joint">
+      <command_interface name="velocity"/>
+      <state_interface name="velocity"><param name="initial_value">0.0</param></state_interface>
+      <state_interface name="position"><param name="initial_value">0.0</param></state_interface>
+    </joint>
+
+    <!-- Rear Right -->
+    <joint name="rr_axle_joint">
+      <command_interface name="position"/>
+      <state_interface name="position"><param name="initial_value">0.0</param></state_interface>
+    </joint>
+    <joint name="rr_wheel_joint">
+      <command_interface name="velocity"/>
+      <state_interface name="velocity"><param name="initial_value">0.0</param></state_interface>
+      <state_interface name="position"><param name="initial_value">0.0</param></state_interface>
+    </joint>
+  </ros2_control>
+
+</robot>
