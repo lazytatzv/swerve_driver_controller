@@ -36,9 +36,9 @@ swerve_drive_controller:
     base_footprint: "base_footprint"
     enable_odom_tf: true
     open_loop: false
-    front_left_velocity_threshold: 5.0
-    front_right_velocity_threshold: 5.0
-    rear_left_velocity_threshold: 5.0
-    rear_right_velocity_threshold: 5.0
+    front_left_velocity_threshold: 20.0
+    front_right_velocity_threshold: 20.0
+    rear_left_velocity_threshold: 20.0
+    rear_right_velocity_threshold: 20.0
     pose_covariance_diagonal : [0.001, 0.001, 0.001, 0.001, 0.001, 0.01]
     twist_covariance_diagonal: [0.001, 0.001, 0.001, 0.001, 0.001, 0.01]
