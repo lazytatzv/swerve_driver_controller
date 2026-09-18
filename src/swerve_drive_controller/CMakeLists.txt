@@ -33,7 +33,7 @@ add_compile_definitions(RCPPUTILS_VERSION_MAJOR=${rcpputils_VERSION_MAJOR})
 add_compile_definitions(RCPPUTILS_VERSION_MINOR=${rcpputils_VERSION_MINOR})
 
 generate_parameter_library(swerve_drive_controller_parameters
-  src/swerve_drive_controller_parameter.yaml
+  config/swerve_drive_controller_parameter.yaml
 )
 
 add_library(swerve_drive_controller SHARED
@@ -111,6 +111,11 @@ install(TARGETS swerve_drive_controller swerve_drive_controller_parameters
   RUNTIME DESTINATION bin
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
+)
+
+install(
+  DIRECTORY config/
+  DESTINATION share/${PROJECT_NAME}/config
 )
 
 ament_export_libraries(swerve_drive_controller)

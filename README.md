@@ -84,9 +84,13 @@ ros2 launch swerve_drive_bringup foxglove_sim.launch.py
 
 ---
 
-## Controller Configuration
+## Configuration Files
 
-Configuration file: `src/swerve_drive_bringup/config/swerve_controllers.yaml`
+- Top-level configs: [`config/swerve_controllers.yaml`](config/swerve_controllers.yaml) & [`config/teleop_ps5.yaml`](config/teleop_ps5.yaml)
+- Controller package configs: [`src/swerve_drive_controller/config/`](src/swerve_drive_controller/config/)
+- Simulation bringup configs: [`src/swerve_drive_bringup/config/`](src/swerve_drive_bringup/config/)
+
+### Controller Parameters (`config/swerve_controllers.yaml`)
 
 | Parameter | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
