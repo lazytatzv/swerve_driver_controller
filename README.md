@@ -13,11 +13,11 @@ Includes an interactive simulation environment with **URDF model**, **Foxglove S
   - Subscribes to `/cmd_vel` (`geometry_msgs/msg/Twist` or `geometry_msgs/msg/TwistStamped`).
 - **Dual-Mode Steering Support:**
   - **Continuous Mode (Default):** Infinite rotation without angle bounds for modules equipped with slip rings.
-  - **Bounded Mode:** Mechanical hardstop / cable-protection mode (e.g., $\pm 180^\circ$ / $[-\pi, \pi]$) with soft-boundary avoidance.
+  - **Bounded Mode:** Mechanical hardstop / cable-protection mode (e.g., ±180° / `[-π, π]`) with soft-boundary avoidance.
 - **Chattering Prevention (Hysteresis):**
-  - $\pm 20^\circ$ hysteresis band around $90^\circ$ reversal boundaries to eliminate jitter during diagonal motion.
+  - ±20° hysteresis band around 90° reversal boundaries to eliminate jitter during diagonal motion.
 - **Smooth Continuous Velocity Scaling:**
-  - Dynamic drive wheel velocity scaling based on $\cos(\text{steering\_error})$: automatically slows down wheel drive when steering is aligning and ramps up smoothly when aligned.
+  - Dynamic drive wheel velocity scaling based on `cos(steering_error)`: automatically slows down wheel drive when steering is aligning and ramps up smoothly when aligned.
 - **Deadband & Singularity Handling:**
   - Holds module angle when linear/angular speed is below threshold to prevent erratic wheel twitching when stopped or pivoting near modules.
 - **Thoroughly Tested:**
@@ -103,9 +103,9 @@ Configuration file: `src/swerve_drive_bringup/config/swerve_controllers.yaml`
 
 ## Teleoperation Controls (PS5 DualSense)
 
-- **Left Stick Vertical (Axis 1):** Forward / Backward ($v_x$)
-- **Left Stick Horizontal (Axis 0):** Left / Right strafe ($v_y$)
-- **Right Stick Horizontal (Axis 3):** Yaw rotation ($\omega_z$)
+- **Left Stick Vertical (Axis 1):** Forward / Backward (`linear.x`)
+- **Left Stick Horizontal (Axis 0):** Left / Right strafe (`linear.y`)
+- **Right Stick Horizontal (Axis 3):** Yaw rotation (`angular.z`)
 - **R1 Button (Button 5):** Turbo speed boost
 
 ---
