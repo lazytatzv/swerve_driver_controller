@@ -71,10 +71,12 @@ colcon test --packages-select swerve_drive_controller
 colcon test-result --all --verbose
 ```
 
-### 4. Launch Simulation with Foxglove Bridge
+### 4. Launch Simulation
 
+#### Option A: Foxglove Studio Visualization
 ```bash
 ros2 launch swerve_drive_bringup foxglove_sim.launch.py
+# or directly: ros2 launch launch/foxglove_sim.launch.py
 ```
 
 1. Open **[Foxglove Studio](https://foxglove.dev/)** (desktop app or web app).
@@ -82,13 +84,27 @@ ros2 launch swerve_drive_bringup foxglove_sim.launch.py
 3. Add a **3D Panel** and subscribe to `/robot_description` and `/tf`.
 4. Connect a gamepad (PS5 DualSense / standard joystick) to `/dev/input/js0` and drive!
 
+#### Option B: RViz2 Visualization
+```bash
+ros2 launch swerve_drive_bringup rviz_sim.launch.py
+# or directly: ros2 launch launch/rviz_sim.launch.py
+```
+Opens RViz2 pre-configured with RobotModel, TF, and 3D grid display.
+
 ---
 
-## Configuration Files
+## Launch & Configuration Files
 
-- Top-level configs: [`config/swerve_controllers.yaml`](config/swerve_controllers.yaml) & [`config/teleop_ps5.yaml`](config/teleop_ps5.yaml)
-- Controller package configs: [`src/swerve_drive_controller/config/`](src/swerve_drive_controller/config/)
-- Simulation bringup configs: [`src/swerve_drive_bringup/config/`](src/swerve_drive_bringup/config/)
+- **Top-level Launch Files:**
+  - [`launch/foxglove_sim.launch.py`](launch/foxglove_sim.launch.py): Full simulation with Foxglove Bridge & PS5 joystick teleop.
+  - [`launch/rviz_sim.launch.py`](launch/rviz_sim.launch.py): Full simulation with RViz2 GUI & PS5 joystick teleop.
+- **Top-level Config Files:**
+  - [`config/swerve_controllers.yaml`](config/swerve_controllers.yaml): Controller parameters and controller manager configuration.
+  - [`config/teleop_ps5.yaml`](config/teleop_ps5.yaml): PS5 DualSense button / axis mapping.
+  - [`config/view_robot.rviz`](config/view_robot.rviz): RViz2 display setup.
+- **Package-level Files:**
+  - [`src/swerve_drive_bringup/launch/`](src/swerve_drive_bringup/launch/) & [`src/swerve_drive_bringup/config/`](src/swerve_drive_bringup/config/)
+  - [`src/swerve_drive_controller/config/`](src/swerve_drive_controller/config/)
 
 ### Controller Parameters (`config/swerve_controllers.yaml`)
 
