@@ -1,15 +1,22 @@
 import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.conditions import IfCondition
-from launch.actions import DeclareLaunchArgument, ExecuteProcess, IncludeLaunchDescription, RegisterEventHandler
+from launch.conditions import IfCondition, UnlessCondition
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, RegisterEventHandler
 from launch.event_handlers import OnProcessExit
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import Command, FindExecutable, LaunchConfiguration, PathJoinSubstitution
+from launch.substitutions import Command, FindExecutable, LaunchConfiguration, PathJoinSubstitution, PythonExpression
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
 def generate_launch_description():
+    headless_arg = DeclareLaunchArgument(
+        'headless',
+        default_value='true',
+        description='Run Gazebo in headless mode (server only, recommended for Foxglove Studio)',
+    )
+    headless = LaunchConfiguration('headless')
+
     pkg_share = FindPackageShare('swerve_drive_bringup')
     ros_gz_sim_share = FindPackageShare('ros_gz_sim')
 
@@ -23,12 +30,21 @@ def generate_launch_description():
     # Controller config
     controller_config = PathJoinSubstitution([pkg_share, 'config', 'swerve_controllers.yaml'])
 
-    # 1. Gazebo Sim (Empty World)
-    gazebo_sim = IncludeLaunchDescription(
+    # 1. Gazebo Sim (Headless server-only or GUI)
+    gazebo_sim_headless = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            PathJoinSubstitution([ros_gz_sim_share, 'launch', 'gz_sim.launch.py'])
+        ),
+        launch_arguments={'gz_args': '-s -r -v 3 empty.sdf'}.items(),
+        condition=IfCondition(headless),
+    )
+
+    gazebo_sim_gui = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             PathJoinSubstitution([ros_gz_sim_share, 'launch', 'gz_sim.launch.py'])
         ),
         launch_arguments={'gz_args': '-r -v 3 empty.sdf'}.items(),
+        condition=UnlessCondition(headless),
     )
 
     # 2. robot_state_publisher
@@ -45,6 +61,7 @@ def generate_launch_description():
         executable='create',
         output='screen',
         arguments=[
+            '-world', 'empty',
             '-name', 'swerve_robot',
             '-topic', 'robot_description',
             '-z', '0.1',
@@ -105,7 +122,9 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
-        gazebo_sim,
+        headless_arg,
+        gazebo_sim_headless,
+        gazebo_sim_gui,
         clock_bridge,
         static_map_to_odom_node,
         robot_state_publisher_node,
