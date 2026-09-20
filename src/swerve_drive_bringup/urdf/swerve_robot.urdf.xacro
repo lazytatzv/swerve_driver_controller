@@ -1,6 +1,9 @@
 <?xml version="1.0"?>
 <robot name="swerve_robot" xmlns:xacro="http://www.ros.org/wiki/xacro">
 
+  <!-- Arguments -->
+  <xacro:arg name="use_gazebo" default="false"/>
+
   <!-- Constants -->
   <xacro:property name="wheelbase" value="0.50"/>
   <xacro:property name="trackwidth" value="0.40"/>
@@ -115,6 +118,14 @@
       <origin xyz="0 0 -${wheel_radius}" rpy="0 0 0"/>
       <axis xyz="0 1 0"/>
     </joint>
+
+    <!-- Gazebo physics properties for wheel -->
+    <gazebo reference="${prefix}_wheel_link">
+      <mu1>1.2</mu1>
+      <mu2>1.2</mu2>
+      <kp>1000000.0</kp>
+      <kd>100.0</kd>
+    </gazebo>
   </xacro:macro>
 
   <!-- Instantiate 4 Modules -->
@@ -127,11 +138,25 @@
   <!-- Rear Right -->
   <xacro:swerve_module prefix="rr" x_pos="-${wheelbase/2.0}" y_pos="-${trackwidth/2.0}"/>
 
-  <!-- ros2_control description using Mock GenericSystem hardware -->
-  <ros2_control name="SwerveMockSystem" type="system">
+  <!-- Gazebo ros2_control Plugin -->
+  <xacro:if value="$(arg use_gazebo)">
+    <gazebo>
+      <plugin filename="gz_ros2_control-system" name="gz_ros2_control::GazeboSimROS2ControlPlugin">
+        <parameters>$(find swerve_drive_bringup)/config/swerve_controllers.yaml</parameters>
+      </plugin>
+    </gazebo>
+  </xacro:if>
+
+  <!-- ros2_control description -->
+  <ros2_control name="SwerveSystem" type="system">
     <hardware>
-      <plugin>mock_components/GenericSystem</plugin>
-      <param name="calculate_dynamics">true</param>
+      <xacro:if value="$(arg use_gazebo)">
+        <plugin>gz_ros2_control/GazeboSimSystem</plugin>
+      </xacro:if>
+      <xacro:unless value="$(arg use_gazebo)">
+        <plugin>mock_components/GenericSystem</plugin>
+        <param name="calculate_dynamics">true</param>
+      </xacro:unless>
     </hardware>
 
     <!-- Front Left -->
