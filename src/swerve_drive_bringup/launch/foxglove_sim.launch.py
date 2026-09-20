@@ -25,6 +25,12 @@ def generate_launch_description():
     # Controller config
     controller_config = PathJoinSubstitution([pkg_share, 'config', 'swerve_controllers.yaml'])
 
+    # 0. Zenoh Router (zenohd)
+    zenoh_router = ExecuteProcess(
+        cmd=['zenohd', '-c', '/workspace/zenoh/zenoh_router.json5'],
+        output='screen',
+    )
+
     # 1. robot_state_publisher
     robot_state_publisher_node = Node(
         package='robot_state_publisher',
@@ -113,6 +119,7 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
+        zenoh_router,
         use_joy_arg,
         static_map_to_odom_node,
         robot_state_publisher_node,

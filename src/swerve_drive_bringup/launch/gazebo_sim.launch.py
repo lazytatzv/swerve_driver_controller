@@ -32,6 +32,12 @@ def generate_launch_description():
     ])
     robot_description = {'robot_description': robot_description_content}
 
+    # 0. Zenoh Router (zenohd)
+    zenoh_router = ExecuteProcess(
+        cmd=['zenohd', '-c', '/workspace/zenoh/zenoh_router.json5'],
+        output='screen',
+    )
+
     # 1. Gazebo Sim (Headless server-only or GUI)
     gazebo_sim_headless = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -124,6 +130,7 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
+        zenoh_router,
         headless_arg,
         gazebo_sim_headless,
         gazebo_sim_gui,
