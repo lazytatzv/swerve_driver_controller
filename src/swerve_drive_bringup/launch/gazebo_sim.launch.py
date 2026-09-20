@@ -85,14 +85,12 @@ def generate_launch_description():
         executable='parameter_bridge',
         arguments=[
             '/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock',
-            '/realsense/image@sensor_msgs/msg/Image[gz.msgs.Image',
-            '/realsense/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo',
+            '/camera/color/image_raw@sensor_msgs/msg/Image[gz.msgs.Image',
+            '/camera/color/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo',
             '/lidar3d/points@sensor_msgs/msg/PointCloud2[gz.msgs.PointCloudPacked',
             '/lidar3d/scan@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan',
         ],
         remappings=[
-            ('/realsense/image', '/camera/color/image_raw'),
-            ('/realsense/camera_info', '/camera/color/camera_info'),
             ('/lidar3d/points', '/lidar/points'),
             ('/lidar3d/scan', '/scan'),
         ],
