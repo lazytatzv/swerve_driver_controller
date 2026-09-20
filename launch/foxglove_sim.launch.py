@@ -1,3 +1,6 @@
+# foxgloveのteleopを使う際は
+# publish周期を20-50hz程度にしないとカクついたり周期的に止まってしまう
+
 import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
