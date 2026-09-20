@@ -3,6 +3,7 @@
 
   <!-- Arguments -->
   <xacro:arg name="use_gazebo" default="false"/>
+  <xacro:arg name="controller_yaml" default=""/>
 
   <!-- Constants -->
   <xacro:property name="wheelbase" value="0.50"/>
@@ -142,7 +143,9 @@
   <xacro:if value="$(arg use_gazebo)">
     <gazebo>
       <plugin filename="gz_ros2_control-system" name="gz_ros2_control::GazeboSimROS2ControlPlugin">
-        <parameters>$(find swerve_drive_bringup)/config/swerve_controllers.yaml</parameters>
+        <xacro:if value="${'$(arg controller_yaml)' != ''}">
+          <parameters>$(arg controller_yaml)</parameters>
+        </xacro:if>
       </plugin>
     </gazebo>
   </xacro:if>

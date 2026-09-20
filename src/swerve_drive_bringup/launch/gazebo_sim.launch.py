@@ -20,15 +20,17 @@ def generate_launch_description():
     pkg_share = FindPackageShare('swerve_drive_bringup')
     ros_gz_sim_share = FindPackageShare('ros_gz_sim')
 
+    # Controller config
+    controller_config = PathJoinSubstitution([pkg_share, 'config', 'swerve_controllers.yaml'])
+
     # Path to URDF xacro (with use_gazebo:=true)
     urdf_path = PathJoinSubstitution([pkg_share, 'urdf', 'swerve_robot.urdf.xacro'])
     robot_description_content = Command([
-        FindExecutable(name='xacro'), ' ', urdf_path, ' use_gazebo:=true'
+        FindExecutable(name='xacro'), ' ', urdf_path,
+        ' use_gazebo:=true',
+        ' controller_yaml:=', controller_config,
     ])
     robot_description = {'robot_description': robot_description_content}
-
-    # Controller config
-    controller_config = PathJoinSubstitution([pkg_share, 'config', 'swerve_controllers.yaml'])
 
     # 1. Gazebo Sim (Headless server-only or GUI)
     gazebo_sim_headless = IncludeLaunchDescription(
