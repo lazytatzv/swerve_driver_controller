@@ -79,7 +79,7 @@ def generate_launch_description():
         ],
     )
 
-    # 4. Bridge /clock and sensors (RealSense RGB-D & 3D LiDAR) from Gazebo to ROS 2
+    # 4. Bridge /clock and sensors (RGB Camera & 3D LiDAR) from Gazebo to ROS 2
     sensor_bridge = Node(
         package='ros_gz_bridge',
         executable='parameter_bridge',
@@ -87,16 +87,12 @@ def generate_launch_description():
             '/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock',
             '/realsense/image@sensor_msgs/msg/Image[gz.msgs.Image',
             '/realsense/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo',
-            '/realsense/depth_image@sensor_msgs/msg/Image[gz.msgs.Image',
-            '/realsense/points@sensor_msgs/msg/PointCloud2[gz.msgs.PointCloudPacked',
             '/lidar3d/points@sensor_msgs/msg/PointCloud2[gz.msgs.PointCloudPacked',
             '/lidar3d/scan@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan',
         ],
         remappings=[
             ('/realsense/image', '/camera/color/image_raw'),
             ('/realsense/camera_info', '/camera/color/camera_info'),
-            ('/realsense/depth_image', '/camera/depth/image_raw'),
-            ('/realsense/points', '/camera/depth/color/points'),
             ('/lidar3d/points', '/lidar/points'),
             ('/lidar3d/scan', '/scan'),
         ],

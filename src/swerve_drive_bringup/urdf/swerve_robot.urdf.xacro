@@ -218,36 +218,36 @@
       </plugin>
     </gazebo>
 
-    <!-- RealSense D435 RGB-D Sensor -->
+    <!-- RealSense D435 RGB Camera (Optimized 10Hz, 480x360) -->
     <gazebo reference="camera_link">
-      <sensor name="realsense" type="rgbd_camera">
+      <sensor name="realsense" type="camera">
         <camera>
           <horizontal_fov>1.204</horizontal_fov>
           <image>
-            <width>640</width>
-            <height>480</height>
+            <width>480</width>
+            <height>360</height>
             <format>R8G8B8</format>
           </image>
           <clip>
             <near>0.1</near>
-            <far>10.0</far>
+            <far>20.0</far>
           </clip>
         </camera>
         <always_on>1</always_on>
-        <update_rate>30</update_rate>
-        <visualize>true</visualize>
+        <update_rate>10</update_rate>
+        <visualize>false</visualize>
         <topic>realsense</topic>
         <gz_frame_id>camera_optical_frame</gz_frame_id>
       </sensor>
     </gazebo>
 
-    <!-- 3D LiDAR Sensor -->
+    <!-- 3D LiDAR Sensor (Optimized 10Hz, 360x16 channels) -->
     <gazebo reference="lidar_link">
       <sensor name="lidar3d" type="gpu_lidar">
         <ray>
           <scan>
             <horizontal>
-              <samples>720</samples>
+              <samples>360</samples>
               <resolution>1</resolution>
               <min_angle>-3.141592653589793</min_angle>
               <max_angle>3.141592653589793</max_angle>
@@ -262,12 +262,12 @@
           <range>
             <min>0.1</min>
             <max>30.0</max>
-            <resolution>0.01</resolution>
+            <resolution>0.02</resolution>
           </range>
         </ray>
         <always_on>1</always_on>
         <update_rate>10</update_rate>
-        <visualize>true</visualize>
+        <visualize>false</visualize>
         <topic>lidar3d</topic>
         <gz_frame_id>lidar_link</gz_frame_id>
       </sensor>
