@@ -46,7 +46,7 @@ def generate_launch_description():
         PythonLaunchDescriptionSource(
             PathJoinSubstitution([ros_gz_sim_share, 'launch', 'gz_sim.launch.py'])
         ),
-        launch_arguments={'gz_args': ['-s -r -v 3 ', world_path]}.items(),
+        launch_arguments={'gz_args': ['-s -r --headless-rendering -v 3 ', world_path]}.items(),
         condition=IfCondition(headless),
     )
 
