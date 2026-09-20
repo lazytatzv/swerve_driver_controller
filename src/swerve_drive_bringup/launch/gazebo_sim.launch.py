@@ -38,12 +38,15 @@ def generate_launch_description():
         output='screen',
     )
 
+    # World path
+    world_path = PathJoinSubstitution([pkg_share, 'worlds', 'test_world.sdf'])
+
     # 1. Gazebo Sim (Headless server-only or GUI)
     gazebo_sim_headless = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             PathJoinSubstitution([ros_gz_sim_share, 'launch', 'gz_sim.launch.py'])
         ),
-        launch_arguments={'gz_args': '-s -r -v 3 empty.sdf'}.items(),
+        launch_arguments={'gz_args': ['-s -r -v 3 ', world_path]}.items(),
         condition=IfCondition(headless),
     )
 
@@ -51,7 +54,7 @@ def generate_launch_description():
         PythonLaunchDescriptionSource(
             PathJoinSubstitution([ros_gz_sim_share, 'launch', 'gz_sim.launch.py'])
         ),
-        launch_arguments={'gz_args': '-r -v 3 empty.sdf'}.items(),
+        launch_arguments={'gz_args': ['-r -v 3 ', world_path]}.items(),
         condition=UnlessCondition(headless),
     )
 
@@ -69,7 +72,7 @@ def generate_launch_description():
         executable='create',
         output='screen',
         arguments=[
-            '-world', 'empty',
+            '-world', 'test_world',
             '-name', 'swerve_robot',
             '-topic', 'robot_description',
             '-z', '0.1',
