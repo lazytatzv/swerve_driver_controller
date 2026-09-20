@@ -24,6 +24,12 @@
   <material name="wheel_mat">
     <color rgba="0.1 0.1 0.1 1.0"/>
   </material>
+  <material name="sensor_mat">
+    <color rgba="0.1 0.1 0.1 1.0"/>
+  </material>
+  <material name="realsense_mat">
+    <color rgba="0.7 0.7 0.7 1.0"/>
+  </material>
 
   <!-- base_footprint -->
   <link name="base_footprint"/>
@@ -62,6 +68,69 @@
       <inertia ixx="0.3" ixy="0" ixz="0" iyy="0.4" iyz="0" izz="0.6"/>
     </inertial>
   </link>
+
+  <!-- ==================== Sensors ==================== -->
+  <!-- 1. RealSense D435 RGB-D Camera -->
+  <link name="camera_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.025 0.09 0.025"/>
+      </geometry>
+      <material name="realsense_mat"/>
+    </visual>
+    <collision>
+      <geometry>
+        <box size="0.025 0.09 0.025"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <mass value="0.072"/>
+      <origin xyz="0 0 0"/>
+      <inertia ixx="0.0001" ixy="0" ixz="0" iyy="0.0001" iyz="0" izz="0.0001"/>
+    </inertial>
+  </link>
+
+  <joint name="camera_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="camera_link"/>
+    <origin xyz="0.28 0 0.06" rpy="0 0 0"/>
+  </joint>
+
+  <!-- Camera Optical Frame (REP-103) -->
+  <link name="camera_optical_frame"/>
+  <joint name="camera_optical_joint" type="fixed">
+    <parent link="camera_link"/>
+    <child link="camera_optical_frame"/>
+    <origin xyz="0 0 0" rpy="${-pi/2} 0 ${-pi/2}"/>
+  </joint>
+
+  <!-- 2. 3D LiDAR (e.g. Mid-360 / 16-channel 3D LiDAR) -->
+  <link name="lidar_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="0.04" length="0.06"/>
+      </geometry>
+      <material name="sensor_mat"/>
+    </visual>
+    <collision>
+      <geometry>
+        <cylinder radius="0.04" length="0.06"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <mass value="0.25"/>
+      <origin xyz="0 0 0"/>
+      <inertia ixx="0.0002" ixy="0" ixz="0" iyy="0.0002" iyz="0" izz="0.0002"/>
+    </inertial>
+  </link>
+
+  <joint name="lidar_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="lidar_link"/>
+    <origin xyz="0.0 0 0.12" rpy="0 0 0"/>
+  </joint>
 
   <!-- Macro for Swerve Module -->
   <xacro:macro name="swerve_module" params="prefix x_pos y_pos">
@@ -139,7 +208,7 @@
   <!-- Rear Right -->
   <xacro:swerve_module prefix="rr" x_pos="-${wheelbase/2.0}" y_pos="-${trackwidth/2.0}"/>
 
-  <!-- Gazebo ros2_control Plugin -->
+  <!-- Gazebo Sensors & Plugins -->
   <xacro:if value="$(arg use_gazebo)">
     <gazebo>
       <plugin filename="gz_ros2_control-system" name="gz_ros2_control::GazeboSimROS2ControlPlugin">
@@ -147,6 +216,61 @@
           <parameters>$(arg controller_yaml)</parameters>
         </xacro:if>
       </plugin>
+    </gazebo>
+
+    <!-- RealSense D435 RGB-D Sensor -->
+    <gazebo reference="camera_link">
+      <sensor name="realsense" type="rgbd_camera">
+        <camera>
+          <horizontal_fov>1.204</horizontal_fov>
+          <image>
+            <width>640</width>
+            <height>480</height>
+            <format>R8G8B8</format>
+          </image>
+          <clip>
+            <near>0.1</near>
+            <far>10.0</far>
+          </clip>
+        </camera>
+        <always_on>1</always_on>
+        <update_rate>30</update_rate>
+        <visualize>true</visualize>
+        <topic>realsense</topic>
+        <gz_frame_id>camera_optical_frame</gz_frame_id>
+      </sensor>
+    </gazebo>
+
+    <!-- 3D LiDAR Sensor -->
+    <gazebo reference="lidar_link">
+      <sensor name="lidar3d" type="gpu_lidar">
+        <ray>
+          <scan>
+            <horizontal>
+              <samples>720</samples>
+              <resolution>1</resolution>
+              <min_angle>-3.141592653589793</min_angle>
+              <max_angle>3.141592653589793</max_angle>
+            </horizontal>
+            <vertical>
+              <samples>16</samples>
+              <resolution>1</resolution>
+              <min_angle>-0.2617993877991494</min_angle>
+              <max_angle>0.2617993877991494</max_angle>
+            </vertical>
+          </scan>
+          <range>
+            <min>0.1</min>
+            <max>30.0</max>
+            <resolution>0.01</resolution>
+          </range>
+        </ray>
+        <always_on>1</always_on>
+        <update_rate>10</update_rate>
+        <visualize>true</visualize>
+        <topic>lidar3d</topic>
+        <gz_frame_id>lidar_link</gz_frame_id>
+      </sensor>
     </gazebo>
   </xacro:if>
 
