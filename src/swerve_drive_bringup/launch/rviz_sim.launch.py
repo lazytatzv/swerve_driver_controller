@@ -1,6 +1,7 @@
 import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
+from launch.conditions import IfCondition
 from launch.actions import DeclareLaunchArgument, ExecuteProcess, RegisterEventHandler, SetEnvironmentVariable
 from launch.event_handlers import OnProcessExit
 from launch.substitutions import Command, FindExecutable, LaunchConfiguration, PathJoinSubstitution
@@ -9,6 +10,11 @@ from launch_ros.substitutions import FindPackageShare
 
 def generate_launch_description():
     set_rmw = SetEnvironmentVariable('RMW_IMPLEMENTATION', 'rmw_fastrtps_cpp')
+    use_joy_arg = DeclareLaunchArgument(
+        'use_joy',
+        default_value='false',
+        description='Enable joystick teleoperation nodes',
+    )
     pkg_share = FindPackageShare('swerve_drive_bringup')
 
     # Path to URDF xacro
@@ -36,7 +42,15 @@ def generate_launch_description():
         output='both',
         remappings=[
             ('/swerve_drive_controller/cmd_vel', '/cmd_vel'),
+            ('/swerve_drive_controller/odom', '/odom'),
         ],
+    )
+
+    # 2.1 static transform (map -> odom)
+    static_map_to_odom_node = Node(
+        package='tf2_ros',
+        executable='static_transform_publisher',
+        arguments=['--frame-id', 'map', '--child-frame-id', 'odom'],
     )
 
     # 3. joint_state_broadcaster spawner
@@ -66,7 +80,7 @@ def generate_launch_description():
         arguments=['-d', rviz_config],
     )
 
-    # 6. Joystick teleop nodes (PS5 controller)
+    # 6. Joystick teleop nodes (PS5 controller, optional)
     joy_config = PathJoinSubstitution([pkg_share, 'config', 'teleop_ps5.yaml'])
     joy_node = Node(
         package='joy',
@@ -75,17 +89,16 @@ def generate_launch_description():
         parameters=[{
             'dev': '/dev/input/js0',
             'deadzone': 0.05,
-            'autorepeat_rate': 20.0,
+            'autorepeat_rate': 0.0,
         }],
+        condition=IfCondition(LaunchConfiguration('use_joy')),
     )
     teleop_twist_joy_node = Node(
         package='teleop_twist_joy',
         executable='teleop_node',
         name='teleop_twist_joy_node',
         parameters=[joy_config],
-        remappings=[
-            ('/cmd_vel', '/swerve_drive_controller/cmd_vel'),
-        ],
+        condition=IfCondition(LaunchConfiguration('use_joy')),
     )
 
     # Delay swerve_drive_controller until joint_state_broadcaster starts
@@ -98,6 +111,8 @@ def generate_launch_description():
 
     return LaunchDescription([
         set_rmw,
+        use_joy_arg,
+        static_map_to_odom_node,
         robot_state_publisher_node,
         ros2_control_node,
         joint_state_broadcaster_spawner,
