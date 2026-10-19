@@ -552,11 +552,9 @@ controller_interface::return_type SwerveController::update_and_write_commands(
       angles::shortest_angular_distance(
         current_steering_angles[i], wheel_command[i].steering_angle));
 
-    // Smooth continuous velocity scaling based on cosine of steering error:
-    // Full speed when aligned (error=0), smoothly reduces to 0 when wheels are perpendicular (90 deg).
-    // Uses cos^2(steering_error) to prevent chassis kicks/shaking while wheels turn into position.
-    double cos_err = std::cos(steering_error);
-    double velocity_scale = (cos_err > 0.0) ? (cos_err * cos_err) : 0.0;
+    // Smooth velocity scaling: maintains at least 30% drive so movement never feels sluggish or deadlocked,
+    // while scaling up to 100% as steering aligns.
+    double velocity_scale = std::max(0.3, std::cos(steering_error));
 
     // Apply velocity scaling
     wheel_command[i].drive_velocity *= velocity_scale;
