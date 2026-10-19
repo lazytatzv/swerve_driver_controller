@@ -356,8 +356,9 @@ CallbackReturn SwerveController::on_activate(const rclcpp_lifecycle::State &)
       RCLCPP_ERROR(logger, "ERROR IN FETCHING axle handle for: %s", axle_joint_names[i].c_str());
       return CallbackReturn::ERROR;
     }
-    axle_handles_[i]->set_position(0.0);
-    previous_steering_angles_[i] = axle_handles_[i]->get_feedback();
+    double current_pos = axle_handles_[i]->get_feedback();
+    axle_handles_[i]->set_position(current_pos);
+    previous_steering_angles_[i] = current_pos;
   }
 
   is_halted_ = false;
