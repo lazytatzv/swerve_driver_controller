@@ -238,6 +238,11 @@ protected:
     realtime_joint_commands_publisher_ = nullptr;
   sensor_msgs::msg::JointState joint_commands_message_;
 
+  double limited_vx_{0.0};
+  double limited_vy_{0.0};
+  double limited_wz_{0.0};
+  rclcpp::Time previous_command_timestamp_{0, 0, RCL_CLOCK_UNINITIALIZED};
+
   bool is_halted_ = false;
   bool reset();
   void halt();

@@ -203,3 +203,18 @@ swerve_drive_controller:
       description: "Whether to use TwistStamped (true) or Twist (false) for velocity commands.",
       read_only: true,
     }
+  max_linear_acceleration:
+    {
+      type: double,
+      default_value: 0.0,
+      description: "Maximum linear acceleration in m/s^2. 0.0 means no limit.",
+      read_only: false,
+    }
+  max_angular_acceleration:
+    {
+      type: double,
+      default_value: 0.0,
+      description: "Maximum angular acceleration in rad/s^2. 0.0 means no limit.",
+      read_only: false,
+    }
+

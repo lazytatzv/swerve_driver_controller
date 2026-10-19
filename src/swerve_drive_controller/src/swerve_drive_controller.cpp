@@ -362,6 +362,10 @@ CallbackReturn SwerveController::on_activate(const rclcpp_lifecycle::State &)
 
   is_halted_ = false;
   subscriber_is_active_ = true;
+  limited_vx_ = 0.0;
+  limited_vy_ = 0.0;
+  limited_wz_ = 0.0;
+  previous_command_timestamp_ = rclcpp::Time(0, 0, RCL_CLOCK_UNINITIALIZED);
   RCLCPP_INFO(logger, "Subscriber and publisher are now active.");
   return CallbackReturn::SUCCESS;
 }
@@ -415,18 +419,76 @@ controller_interface::return_type SwerveController::update_and_write_commands(
     return controller_interface::return_type::OK;
   }
 
-  double linear_x_cmd = reference_interfaces_[0];
-  double linear_y_cmd = reference_interfaces_[1];
-  double angular_cmd = reference_interfaces_[2];
+  double target_vx = reference_interfaces_[0];
+  double target_vy = reference_interfaces_[1];
+  double target_wz = reference_interfaces_[2];
 
-  if (!std::isfinite(linear_x_cmd) || !std::isfinite(linear_y_cmd) || !std::isfinite(angular_cmd))
+  if (!std::isfinite(target_vx) || !std::isfinite(target_vy) || !std::isfinite(target_wz))
   {
     // NaNs occur on initialization when the reference interfaces are not yet set
     return controller_interface::return_type::OK;
   }
 
-  const bool is_stop = (std::fabs(linear_x_cmd) < EPS) && (std::fabs(linear_y_cmd) < EPS) &&
-                       (std::fabs(angular_cmd) < EPS);
+  // Acceleration slew-rate limiter
+  double dt = 0.0;
+  if (previous_command_timestamp_.nanoseconds() > 0)
+  {
+    dt = (time - previous_command_timestamp_).seconds();
+  }
+  previous_command_timestamp_ = time;
+
+  if (dt > 0.0001 && dt < 1.0)
+  {
+    if (params_.max_linear_acceleration > 0.0)
+    {
+      double max_dv = params_.max_linear_acceleration * dt;
+      double dv_x = target_vx - limited_vx_;
+      double dv_y = target_vy - limited_vy_;
+      double dv_mag = std::hypot(dv_x, dv_y);
+      if (dv_mag > max_dv)
+      {
+        limited_vx_ += (dv_x / dv_mag) * max_dv;
+        limited_vy_ += (dv_y / dv_mag) * max_dv;
+      }
+      else
+      {
+        limited_vx_ = target_vx;
+        limited_vy_ = target_vy;
+      }
+    }
+    else
+    {
+      limited_vx_ = target_vx;
+      limited_vy_ = target_vy;
+    }
+
+    if (params_.max_angular_acceleration > 0.0)
+    {
+      double max_dw = params_.max_angular_acceleration * dt;
+      double dw = target_wz - limited_wz_;
+      if (std::abs(dw) > max_dw)
+      {
+        limited_wz_ += std::copysign(max_dw, dw);
+      }
+      else
+      {
+        limited_wz_ = target_wz;
+      }
+    }
+    else
+    {
+      limited_wz_ = target_wz;
+    }
+  }
+  else
+  {
+    limited_vx_ = target_vx;
+    limited_vy_ = target_vy;
+    limited_wz_ = target_wz;
+  }
+
+  const bool is_stop = (std::fabs(limited_vx_) < EPS) && (std::fabs(limited_vy_) < EPS) &&
+                       (std::fabs(limited_wz_) < EPS);
 
   std::array<double, 4> current_steering_angles{};
   for (std::size_t i = 0; i < 4; ++i)
@@ -454,7 +516,7 @@ controller_interface::return_type SwerveController::update_and_write_commands(
   else
   {
     wheel_command = swerveDriveKinematics_.compute_wheel_commands(
-      linear_x_cmd, linear_y_cmd, angular_cmd, params_.wheel_radius);
+      limited_vx_, limited_vy_, limited_wz_, params_.wheel_radius);
 
     // Optimize against previous commanded reference angles (not lagging feedback) to prevent
     // mid-maneuver reversals caused by actuator tracking latency
@@ -490,9 +552,11 @@ controller_interface::return_type SwerveController::update_and_write_commands(
       angles::shortest_angular_distance(
         current_steering_angles[i], wheel_command[i].steering_angle));
 
-    // Smooth continuous velocity scaling based on cosine of steering error.
-    // Guarantee at least 50% drive velocity so wheel motors NEVER stall or freeze during diagonal transitions
-    double velocity_scale = std::max(0.5, std::cos(steering_error));
+    // Smooth continuous velocity scaling based on cosine of steering error:
+    // Full speed when aligned (error=0), smoothly reduces to 0 when wheels are perpendicular (90 deg).
+    // Uses cos^2(steering_error) to prevent chassis kicks/shaking while wheels turn into position.
+    double cos_err = std::cos(steering_error);
+    double velocity_scale = (cos_err > 0.0) ? (cos_err * cos_err) : 0.0;
 
     // Apply velocity scaling
     wheel_command[i].drive_velocity *= velocity_scale;
