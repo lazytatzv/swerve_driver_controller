@@ -94,15 +94,17 @@ std::array<WheelCommand, 4> SwerveDriveKinematics::optimize_wheel_commands(
 
   constexpr double hysteresis = 0.15;  // ~8.6 deg margin to prevent thrashing near 90 deg
   constexpr double min_speed_threshold = 0.05;  // 0.05 m/s deadband against joystick noise
+  const double max_safe_angle = enable_steering_limits ?
+    std::min(std::abs(min_steering_angle), std::abs(max_steering_angle)) : 4.36;
 
   for (std::size_t i = 0; i < 4; i++)
   {
-    double curr = angles::normalize_angle(current_steering_angles[i]);
-    double desired = angles::normalize_angle(wheel_commands[i].steering_angle);
+    double curr = current_steering_angles[i];
+    double desired = wheel_commands[i].steering_angle;  // in [-pi, pi]
     double speed = wheel_commands[i].drive_velocity;
     double angular_speed = wheel_commands[i].drive_angular_velocity;
 
-    // If commanded speed is within deadband, keep current steering angle to avoid erratic jitter
+    // If commanded speed is within deadband, keep current continuous steering angle to avoid erratic jitter
     if (std::abs(speed) < min_speed_threshold)
     {
       optimized_commands[i].steering_angle = curr;
@@ -111,44 +113,46 @@ std::array<WheelCommand, 4> SwerveDriveKinematics::optimize_wheel_commands(
       continue;
     }
 
-    // Shortest angular difference from current steering angle to desired heading in [-pi, pi]
+    // Shortest angular distance from current continuous angle to desired heading in [-pi, pi]
     double diff = angles::shortest_angular_distance(curr, desired);
 
-    // Option A: Direct steering towards desired angle
+    // Option A: Direct steering towards desired heading (shortest path)
     double rot_A = std::abs(diff);
-    double target_A = angles::normalize_angle(curr + diff);
+    double candidate_A = curr + diff;
 
     // Option B: Invert drive wheel (reverse drive) and steer 180 degrees away
     double diff_B = (diff > 0.0) ? (diff - M_PI) : (diff + M_PI);
     double rot_B = std::abs(diff_B);
-    double target_B = angles::normalize_angle(curr + diff_B);
+    double candidate_B = curr + diff_B;
 
-    // Choose B (drive inversion) if rot_B is smaller with hysteresis around 90 deg
-    bool choose_B = previous_inversion_[i] ? (rot_B <= rot_A + hysteresis) : (rot_B < rot_A - hysteresis);
+    // Safety checks against hardware/cable limits
+    bool safe_A = std::abs(candidate_A) <= (max_safe_angle + 1e-4);
+    bool safe_B = std::abs(candidate_B) <= (max_safe_angle + 1e-4);
 
-    if (enable_steering_limits)
+    bool choose_B = false;
+    if (safe_A && safe_B)
     {
-      const double eps = 1e-4;
-      bool in_range_A = (target_A >= min_steering_angle - eps) && (target_A <= max_steering_angle + eps);
-      bool in_range_B = (target_B >= min_steering_angle - eps) && (target_B <= max_steering_angle + eps);
-
-      if (in_range_A && in_range_B)
-      {
-        // Both in range, keep choose_B decision
-      }
-      else if (in_range_B && !in_range_A)
-      {
-        choose_B = true;
-      }
-      else if (in_range_A && !in_range_B)
-      {
-        choose_B = false;
-      }
+      choose_B = previous_inversion_[i] ? (rot_B <= rot_A + hysteresis) : (rot_B < rot_A - hysteresis);
+    }
+    else if (safe_B && !safe_A)
+    {
+      choose_B = true;
+    }
+    else if (safe_A && !safe_B)
+    {
+      choose_B = false;
+    }
+    else
+    {
+      // If both candidates exceed safe limit, pick the one closer to zero to unwind safely
+      choose_B = std::abs(candidate_B) < std::abs(candidate_A);
     }
 
     previous_inversion_[i] = choose_B;
 
-    double final_steering_angle = choose_B ? target_B : target_A;
+    double chosen_diff = choose_B ? diff_B : diff;
+    double final_steering_angle = curr + chosen_diff;
+
     if (enable_steering_limits)
     {
       final_steering_angle = std::clamp(final_steering_angle, min_steering_angle, max_steering_angle);

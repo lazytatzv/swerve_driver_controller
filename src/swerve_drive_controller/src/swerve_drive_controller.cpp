@@ -527,38 +527,49 @@ controller_interface::return_type SwerveController::update_and_write_commands(
         params_.enable_steering_angle_limits);
   }
 
-  std::vector<std::tuple<WheelCommand &, double, std::string>> wheel_data = {
-    {wheel_command[0], params_.front_left_velocity_threshold / params_.wheel_radius,
-     "front_left_wheel"},
-    {wheel_command[1], params_.front_right_velocity_threshold / params_.wheel_radius,
-     "front_right_wheel"},
-    {wheel_command[2], params_.rear_left_velocity_threshold / params_.wheel_radius,
-     "rear_left_wheel"},
-    {wheel_command[3], params_.rear_right_velocity_threshold / params_.wheel_radius,
-     "rear_right_wheel"}};
-
-  for (auto & [wheel_command_, threshold, label] : wheel_data)
+  // 1. Proportional Desaturation across all 4 wheels to preserve commanded curvature
+  double max_speed = 0.0;
+  for (std::size_t i = 0; i < 4; ++i)
   {
-    wheel_command_.drive_velocity = std::clamp(wheel_command_.drive_velocity, -threshold, threshold);
-    if (params_.wheel_radius > 0.0)
+    max_speed = std::max(max_speed, std::abs(wheel_command[i].drive_velocity));
+  }
+  const double max_allowed_velocity = params_.front_left_velocity_threshold;
+  if (max_speed > max_allowed_velocity && max_speed > 0.0)
+  {
+    const double scale = max_allowed_velocity / max_speed;
+    for (std::size_t i = 0; i < 4; ++i)
     {
-      wheel_command_.drive_angular_velocity = wheel_command_.drive_velocity / params_.wheel_radius;
+      wheel_command[i].drive_velocity *= scale;
     }
   }
 
+  // 2. Compute drive angular velocities
+  for (std::size_t i = 0; i < 4; ++i)
+  {
+    if (params_.wheel_radius > 0.0)
+    {
+      wheel_command[i].drive_angular_velocity = wheel_command[i].drive_velocity / params_.wheel_radius;
+    }
+  }
+
+  // 3. Synchronized steering-error velocity scaling (unifies all 4 wheels to avoid yaw skew)
+  double min_velocity_scale = 1.0;
   for (std::size_t i = 0; i < 4; i++)
   {
     double steering_error = std::abs(
       angles::shortest_angular_distance(
         current_steering_angles[i], wheel_command[i].steering_angle));
 
-    // Smooth velocity scaling: maintains at least 30% drive so movement never feels sluggish or deadlocked,
-    // while scaling up to 100% as steering aligns.
-    double velocity_scale = std::max(0.3, std::cos(steering_error));
+    // Smooth velocity scaling: maintains at least 30% drive so movement never feels sluggish,
+    // scaling up to 100% as steering aligns.
+    double scale = std::max(0.3, std::cos(steering_error));
+    min_velocity_scale = std::min(min_velocity_scale, scale);
+  }
 
-    // Apply velocity scaling
-    wheel_command[i].drive_velocity *= velocity_scale;
-    wheel_command[i].drive_angular_velocity *= velocity_scale;
+  for (std::size_t i = 0; i < 4; i++)
+  {
+    wheel_command[i].drive_velocity *= min_velocity_scale;
+    wheel_command[i].drive_angular_velocity *= min_velocity_scale;
   }
 
   for (std::size_t i = 0; i < 4; i++)
