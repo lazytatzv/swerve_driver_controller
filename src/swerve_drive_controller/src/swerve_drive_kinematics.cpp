@@ -192,8 +192,28 @@ std::array<WheelCommand, 4> SwerveDriveKinematics::optimize_wheel_commands(
       continue;
     }
 
-    // Always steer directly towards commanded heading with safe multi-candidate unwrapping
-    auto [final_steering_angle, rot_A] = select_safe_candidate(curr, desired);
+    double heading_A = desired;
+    double heading_B = angles::normalize_angle(desired + M_PI);
+
+    auto [cand_A, rot_A] = select_safe_candidate(curr, heading_A);
+    auto [cand_B, rot_B] = select_safe_candidate(curr, heading_B);
+
+    bool choose_B = false;
+    if (is_uniform_translation)
+    {
+      choose_B = global_choose_B;
+    }
+    else
+    {
+      constexpr double pi_2 = M_PI_2;
+      choose_B = previous_inversion_[i] ?
+        (rot_A > (pi_2 - hysteresis)) : (rot_A > (pi_2 + hysteresis));
+    }
+    previous_inversion_[i] = choose_B;
+
+    double final_steering_angle = choose_B ? cand_B : cand_A;
+    double final_speed = choose_B ? -speed : speed;
+    double final_angular_speed = choose_B ? -angular_speed : angular_speed;
 
     if (enable_steering_limits)
     {
@@ -201,8 +221,8 @@ std::array<WheelCommand, 4> SwerveDriveKinematics::optimize_wheel_commands(
     }
 
     optimized_commands[i].steering_angle = final_steering_angle;
-    optimized_commands[i].drive_velocity = speed;
-    optimized_commands[i].drive_angular_velocity = angular_speed;
+    optimized_commands[i].drive_velocity = final_speed;
+    optimized_commands[i].drive_angular_velocity = final_angular_speed;
   }
 
   return optimized_commands;
