@@ -299,6 +299,19 @@ CallbackReturn SwerveController::on_configure(const rclcpp_lifecycle::State & /*
     odometry_transform_message_.transforms.front().header.frame_id = odom_frame_id;
     odometry_transform_message_.transforms.front().child_frame_id = base_frame_id;
 
+    joint_commands_publisher_ = get_node()->create_publisher<sensor_msgs::msg::JointState>(
+      "~/joint_commands", rclcpp::SystemDefaultsQoS());
+    realtime_joint_commands_publisher_ =
+      std::make_shared<realtime_tools::RealtimePublisher<sensor_msgs::msg::JointState>>(
+        joint_commands_publisher_);
+    joint_commands_message_.name = {
+      axle_joint_names[0], axle_joint_names[1], axle_joint_names[2], axle_joint_names[3],
+      wheel_joint_names[0], wheel_joint_names[1], wheel_joint_names[2], wheel_joint_names[3]
+    };
+    joint_commands_message_.position.resize(8, 0.0);
+    joint_commands_message_.velocity.resize(8, 0.0);
+    joint_commands_message_.effort.resize(8, 0.0);
+
     previous_update_timestamp_ = get_node()->get_clock()->now();
   }
   catch (const std::exception & e)
@@ -477,9 +490,9 @@ controller_interface::return_type SwerveController::update_and_write_commands(
       angles::shortest_angular_distance(
         current_steering_angles[i], wheel_command[i].steering_angle));
 
-    // Smooth continuous velocity scaling based on cosine of steering error:
-    // Full speed when aligned (error=0), smoothly reduces to 0 when wheels are perpendicular (90 deg).
-    double velocity_scale = std::max(0.0, std::cos(steering_error));
+    // Smooth continuous velocity scaling based on cosine of steering error.
+    // Guarantee at least 50% drive velocity so wheel motors NEVER stall or freeze during diagonal transitions
+    double velocity_scale = std::max(0.5, std::cos(steering_error));
 
     // Apply velocity scaling
     wheel_command[i].drive_velocity *= velocity_scale;
@@ -562,6 +575,21 @@ controller_interface::return_type SwerveController::update_and_write_commands(
     transform.transform.rotation.w = orientation.w();
     realtime_odometry_transform_publisher_->try_publish(odometry_transform_message_);
   }
+
+  if (realtime_joint_commands_publisher_)
+  {
+    joint_commands_message_.header.stamp = time;
+    for (std::size_t i = 0; i < 4; ++i)
+    {
+      joint_commands_message_.position[i] =
+        is_stop ? previous_steering_angles_[i] : wheel_command[i].steering_angle;
+      joint_commands_message_.velocity[i] = 0.0;
+      joint_commands_message_.position[4 + i] = 0.0;
+      joint_commands_message_.velocity[4 + i] = wheel_command[i].drive_angular_velocity;
+    }
+    realtime_joint_commands_publisher_->try_publish(joint_commands_message_);
+  }
+
   previous_publish_timestamp_ = time;
   return controller_interface::return_type::OK;
 }

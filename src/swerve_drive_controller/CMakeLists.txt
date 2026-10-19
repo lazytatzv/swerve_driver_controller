@@ -18,6 +18,7 @@ set(THIS_PACKAGE_INCLUDE_DEPENDS
   rclcpp_lifecycle
   rcpputils
   realtime_tools
+  sensor_msgs
   angles
   tf2
   tf2_msgs
