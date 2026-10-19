@@ -25,6 +25,7 @@ SwerveDriveKinematics::SwerveDriveKinematics()
 void SwerveDriveKinematics::reset_inversion_state()
 {
   previous_inversion_.fill(false);
+  previous_global_inversion_ = false;
 }
 
 void SwerveDriveKinematics::calculate_wheel_position(
@@ -97,6 +98,63 @@ std::array<WheelCommand, 4> SwerveDriveKinematics::optimize_wheel_commands(
   const double max_safe_angle = enable_steering_limits ?
     std::min(std::abs(min_steering_angle), std::abs(max_steering_angle)) : 4.36;
 
+  // Check if all wheels have identical desired steering angle (pure translation)
+  bool is_uniform_translation = true;
+  double ref_angle = wheel_commands[0].steering_angle;
+  for (std::size_t i = 1; i < 4; i++)
+  {
+    if (std::abs(angles::shortest_angular_distance(ref_angle, wheel_commands[i].steering_angle)) > 1e-3)
+    {
+      is_uniform_translation = false;
+      break;
+    }
+  }
+
+  // If pure translation, determine a single coordinated inversion decision for ALL wheels
+  // to guarantee all wheels drive with the exact same polarity and angle.
+  bool global_choose_B = false;
+  if (is_uniform_translation)
+  {
+    bool all_safe_A = true;
+    bool all_safe_B = true;
+    double max_rot_A = 0.0;
+    double max_rot_B = 0.0;
+
+    for (std::size_t i = 0; i < 4; i++)
+    {
+      double curr = current_steering_angles[i];
+      double diff = angles::shortest_angular_distance(curr, ref_angle);
+      double cand_A = curr + diff;
+      double diff_B = (diff > 0.0) ? (diff - M_PI) : (diff + M_PI);
+      double cand_B = curr + diff_B;
+
+      if (std::abs(cand_A) > (max_safe_angle + 1e-4)) all_safe_A = false;
+      if (std::abs(cand_B) > (max_safe_angle + 1e-4)) all_safe_B = false;
+
+      max_rot_A = std::max(max_rot_A, std::abs(diff));
+      max_rot_B = std::max(max_rot_B, std::abs(diff_B));
+    }
+
+    if (all_safe_A && all_safe_B)
+    {
+      global_choose_B = previous_global_inversion_ ?
+        (max_rot_B <= max_rot_A + hysteresis) : (max_rot_B < max_rot_A - hysteresis);
+    }
+    else if (all_safe_B && !all_safe_A)
+    {
+      global_choose_B = true;
+    }
+    else if (all_safe_A && !all_safe_B)
+    {
+      global_choose_B = false;
+    }
+    else
+    {
+      global_choose_B = (max_rot_B < max_rot_A);
+    }
+    previous_global_inversion_ = global_choose_B;
+  }
+
   for (std::size_t i = 0; i < 4; i++)
   {
     double curr = current_steering_angles[i];
@@ -130,22 +188,29 @@ std::array<WheelCommand, 4> SwerveDriveKinematics::optimize_wheel_commands(
     bool safe_B = std::abs(candidate_B) <= (max_safe_angle + 1e-4);
 
     bool choose_B = false;
-    if (safe_A && safe_B)
+    if (is_uniform_translation)
     {
-      choose_B = previous_inversion_[i] ? (rot_B <= rot_A + hysteresis) : (rot_B < rot_A - hysteresis);
-    }
-    else if (safe_B && !safe_A)
-    {
-      choose_B = true;
-    }
-    else if (safe_A && !safe_B)
-    {
-      choose_B = false;
+      choose_B = global_choose_B;
     }
     else
     {
-      // If both candidates exceed safe limit, pick the one closer to zero to unwind safely
-      choose_B = std::abs(candidate_B) < std::abs(candidate_A);
+      if (safe_A && safe_B)
+      {
+        choose_B = previous_inversion_[i] ? (rot_B <= rot_A + hysteresis) : (rot_B < rot_A - hysteresis);
+      }
+      else if (safe_B && !safe_A)
+      {
+        choose_B = true;
+      }
+      else if (safe_A && !safe_B)
+      {
+        choose_B = false;
+      }
+      else
+      {
+        // If both candidates exceed safe limit, pick the one closer to zero to unwind safely
+        choose_B = std::abs(candidate_B) < std::abs(candidate_A);
+      }
     }
 
     previous_inversion_[i] = choose_B;

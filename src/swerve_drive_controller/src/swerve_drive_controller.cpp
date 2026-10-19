@@ -366,6 +366,7 @@ CallbackReturn SwerveController::on_activate(const rclcpp_lifecycle::State &)
   limited_vy_ = 0.0;
   limited_wz_ = 0.0;
   previous_command_timestamp_ = rclcpp::Time(0, 0, RCL_CLOCK_UNINITIALIZED);
+  swerveDriveKinematics_.reset_inversion_state();
   RCLCPP_INFO(logger, "Subscriber and publisher are now active.");
   return CallbackReturn::SUCCESS;
 }
@@ -553,6 +554,9 @@ controller_interface::return_type SwerveController::update_and_write_commands(
   }
 
   // 3. Synchronized steering-error velocity scaling (unifies all 4 wheels to avoid yaw skew)
+  // Allows 100% full speed within a 25-degree tracking error deadband for agile, responsive drive.
+  // Smoothly scales down with cosine roll-off only during large angular transitions, never below 30%.
+  constexpr double error_deadband = 0.436332;  // 25 degrees in radians
   double min_velocity_scale = 1.0;
   for (std::size_t i = 0; i < 4; i++)
   {
@@ -560,9 +564,11 @@ controller_interface::return_type SwerveController::update_and_write_commands(
       angles::shortest_angular_distance(
         current_steering_angles[i], wheel_command[i].steering_angle));
 
-    // Smooth velocity scaling: maintains at least 30% drive so movement never feels sluggish,
-    // scaling up to 100% as steering aligns.
-    double scale = std::max(0.3, std::cos(steering_error));
+    double scale = 1.0;
+    if (steering_error > error_deadband)
+    {
+      scale = std::max(0.3, std::cos(steering_error - error_deadband));
+    }
     min_velocity_scale = std::min(min_velocity_scale, scale);
   }
 
