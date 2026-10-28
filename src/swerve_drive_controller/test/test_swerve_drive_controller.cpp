@@ -677,8 +677,8 @@ protected:
         wheel_vel_states_[i] = cmd;
         if (fault == Fault::HEALTHY_LAGGING_WITH_REVERSAL)
         {
-          // Healthy motor with a first-order lag (tau = 0.15 s)
-          lagged_[i] += (cmd - lagged_[i]) * (0.01 / 0.15);
+          // Healthy motor with a first-order lag (tau = 1.0 s, i.e. slow reversal)
+          lagged_[i] += (cmd - lagged_[i]) * (0.01 / 1.0);
           wheel_vel_states_[i] = lagged_[i];
         }
         if (i == faulty && step >= 20)
