@@ -25,6 +25,7 @@ SwerveDriveKinematics::SwerveDriveKinematics()
 void SwerveDriveKinematics::reset_inversion_state()
 {
   previous_inversion_.fill(false);
+  previous_global_inversion_ = false;
 }
 
 void SwerveDriveKinematics::calculate_wheel_position(
@@ -92,9 +93,38 @@ std::array<WheelCommand, 4> SwerveDriveKinematics::optimize_wheel_commands(
 
   std::array<WheelCommand, 4> optimized_commands = wheel_commands;
 
-  // Hysteresis margin (~20 deg / 0.35 rad) to prevent inversion thrashing around 90 deg
-  constexpr double hysteresis = 0.35;
-  constexpr double min_speed_threshold = 0.02;  // m/s deadband
+  constexpr double hysteresis = 0.15;           // ~8.6 deg margin to prevent thrashing near 90 deg
+  constexpr double min_speed_threshold = 0.05;   // 0.05 m/s deadband against joystick noise
+  constexpr double pi_2 = M_PI_2;
+
+  // Check if all wheels have identical desired steering angle (pure translation)
+  bool is_uniform_translation = true;
+  double ref_angle = wheel_commands[0].steering_angle;
+  for (std::size_t i = 1; i < 4; i++)
+  {
+    if (std::abs(angles::shortest_angular_distance(ref_angle, wheel_commands[i].steering_angle)) > 1e-3)
+    {
+      is_uniform_translation = false;
+      break;
+    }
+  }
+
+  // If pure translation, determine coordinated inversion decision across all 4 wheels
+  bool global_choose_B = false;
+  if (is_uniform_translation)
+  {
+    double max_rot_A = 0.0;
+    for (std::size_t i = 0; i < 4; i++)
+    {
+      double curr = current_steering_angles[i];
+      double diff_A = angles::shortest_angular_distance(curr, ref_angle);
+      max_rot_A = std::max(max_rot_A, std::abs(diff_A));
+    }
+
+    global_choose_B = previous_global_inversion_ ?
+      (max_rot_A > (pi_2 - hysteresis)) : (max_rot_A > (pi_2 + hysteresis));
+    previous_global_inversion_ = global_choose_B;
+  }
 
   for (std::size_t i = 0; i < 4; i++)
   {
@@ -103,8 +133,7 @@ std::array<WheelCommand, 4> SwerveDriveKinematics::optimize_wheel_commands(
     double speed = wheel_commands[i].drive_velocity;
     double angular_speed = wheel_commands[i].drive_angular_velocity;
 
-    // If commanded wheel speed is negligible (near stop or ICR passing over module),
-    // keep the current steering angle to avoid erratic angle jitter
+    // If commanded speed is within deadband, keep current continuous steering angle
     if (std::abs(speed) < min_speed_threshold)
     {
       optimized_commands[i].steering_angle = curr;
@@ -113,36 +142,33 @@ std::array<WheelCommand, 4> SwerveDriveKinematics::optimize_wheel_commands(
       continue;
     }
 
-    // Shortest angular difference from current continuous steering angle to desired heading in [-pi, pi]
-    double diff = angles::shortest_angular_distance(curr, desired);
+    // Direct heading candidate (Option A)
+    double diff_A = angles::shortest_angular_distance(curr, desired);
+    double target_A = curr + diff_A;
+    double rot_A = std::abs(diff_A);
 
-    // Option A: Direct steering towards desired angle
-    double target_A = curr + diff;
-    double rot_A = std::abs(diff);
-
-    // Option B: Invert drive wheel (reverse drive) and steer 180 degrees away
-    double diff_B = (diff > 0.0) ? (diff - M_PI) : (diff + M_PI);
+    // Inverted heading candidate (Option B: steer to 180 deg opposite, reverse drive)
+    double heading_B = angles::normalize_angle(desired + M_PI);
+    double diff_B = angles::shortest_angular_distance(curr, heading_B);
     double target_B = curr + diff_B;
     double rot_B = std::abs(diff_B);
 
     bool choose_B = false;
-
-    if (!enable_steering_limits)
+    if (is_uniform_translation)
     {
-      // Continuous rotation mode: Modules can rotate infinitely without limits.
-      // Choose whichever requires significantly less rotation (|diff| <= 90 deg).
-      double cost_A = rot_A + (previous_inversion_[i] ? hysteresis : 0.0);
-      double cost_B = rot_B + (previous_inversion_[i] ? 0.0 : hysteresis);
-      choose_B = (cost_B < cost_A);
+      choose_B = global_choose_B;
     }
     else
     {
-      // Bounded steering mode (cable protection)
-      const double eps = 1e-4;
-      bool in_range_A = (target_A >= min_steering_angle - eps) &&
-                        (target_A <= max_steering_angle + eps);
-      bool in_range_B = (target_B >= min_steering_angle - eps) &&
-                        (target_B <= max_steering_angle + eps);
+      choose_B = previous_inversion_[i] ?
+        (rot_A > (pi_2 - hysteresis)) : (rot_A > (pi_2 + hysteresis));
+    }
+
+    if (enable_steering_limits)
+    {
+      constexpr double eps = 1e-4;
+      bool in_range_A = (target_A >= min_steering_angle - eps) && (target_A <= max_steering_angle + eps);
+      bool in_range_B = (target_B >= min_steering_angle - eps) && (target_B <= max_steering_angle + eps);
 
       // Soft limit penalty: gently penalize targets that approach within 15% of the mechanical limits
       double limit_span = max_steering_angle - min_steering_angle;
@@ -172,7 +198,7 @@ std::array<WheelCommand, 4> SwerveDriveKinematics::optimize_wheel_commands(
 
       if (in_range_A && in_range_B)
       {
-        choose_B = (cost_B < cost_A);
+        // Both within range, preserve choose_B decision
       }
       else if (in_range_B && !in_range_A)
       {
@@ -213,28 +239,22 @@ std::array<WheelCommand, 4> SwerveDriveKinematics::optimize_wheel_commands(
         }
       }
     }
+    }
 
-    // Update inversion history for next cycle
     previous_inversion_[i] = choose_B;
 
     double final_steering_angle = choose_B ? target_B : target_A;
+    double final_speed = choose_B ? -speed : speed;
+    double final_angular_speed = choose_B ? -angular_speed : angular_speed;
+
     if (enable_steering_limits)
     {
       final_steering_angle = std::clamp(final_steering_angle, min_steering_angle, max_steering_angle);
     }
 
-    if (choose_B)
-    {
-      optimized_commands[i].drive_velocity = -speed;
-      optimized_commands[i].drive_angular_velocity = -angular_speed;
-    }
-    else
-    {
-      optimized_commands[i].drive_velocity = speed;
-      optimized_commands[i].drive_angular_velocity = angular_speed;
-    }
-
     optimized_commands[i].steering_angle = final_steering_angle;
+    optimized_commands[i].drive_velocity = final_speed;
+    optimized_commands[i].drive_angular_velocity = final_angular_speed;
   }
 
   return optimized_commands;

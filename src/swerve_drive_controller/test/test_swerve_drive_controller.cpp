@@ -450,11 +450,11 @@ TEST_F(SwerveDriveControllerTest, stall_detection_and_auto_recovery)
   {
     ASSERT_EQ(
       controller_->update_reference_from_subscribers(
-        rclcpp::Time(0, step * 10000000, RCL_ROS_TIME), rclcpp::Duration::from_seconds(0.01)),
+        rclcpp::Time(step / 100, (step % 100) * 10000000, RCL_ROS_TIME), rclcpp::Duration::from_seconds(0.01)),
       controller_interface::return_type::OK);
     ASSERT_EQ(
       controller_->update_and_write_commands(
-        rclcpp::Time(0, step * 10000000, RCL_ROS_TIME), rclcpp::Duration::from_seconds(0.01)),
+        rclcpp::Time(step / 100, (step % 100) * 10000000, RCL_ROS_TIME), rclcpp::Duration::from_seconds(0.01)),
       controller_interface::return_type::OK);
   }
 
@@ -476,11 +476,11 @@ TEST_F(SwerveDriveControllerTest, stall_detection_and_auto_recovery)
   {
     ASSERT_EQ(
       controller_->update_reference_from_subscribers(
-        rclcpp::Time(0, step * 10000000, RCL_ROS_TIME), rclcpp::Duration::from_seconds(0.01)),
+        rclcpp::Time(step / 100, (step % 100) * 10000000, RCL_ROS_TIME), rclcpp::Duration::from_seconds(0.01)),
       controller_interface::return_type::OK);
     ASSERT_EQ(
       controller_->update_and_write_commands(
-        rclcpp::Time(0, step * 10000000, RCL_ROS_TIME), rclcpp::Duration::from_seconds(0.01)),
+        rclcpp::Time(step / 100, (step % 100) * 10000000, RCL_ROS_TIME), rclcpp::Duration::from_seconds(0.01)),
       controller_interface::return_type::OK);
   }
 
@@ -537,6 +537,75 @@ TEST_F(SwerveDriveControllerTest, stall_detection_disabled_by_default)
   // Wheel 1 MUST remain active when cutoff is disabled!
   EXPECT_TRUE(controller_->get_active_wheels()[1]);
   EXPECT_GT(command_itfs_[1].get_optional().value(), 0.0);
+
+  state = controller_->get_node()->deactivate();
+  ASSERT_EQ(state.id(), State::PRIMARY_STATE_INACTIVE);
+  state = controller_->get_node()->cleanup();
+  ASSERT_EQ(state.id(), State::PRIMARY_STATE_UNCONFIGURED);
+  executor.cancel();
+}
+
+TEST_F(SwerveDriveControllerTest, reversed_wheel_is_cut_off_not_inverted)
+{
+  ASSERT_EQ(
+    InitController(
+      wheel_joint_names_, steering_joint_names_,
+      {rclcpp::Parameter("enable_auto_fault_cutoff", rclcpp::ParameterValue(true))}),
+    controller_interface::return_type::OK);
+
+  rclcpp::executors::SingleThreadedExecutor executor;
+  executor.add_node(controller_->get_node()->get_node_base_interface());
+
+  auto state = controller_->get_node()->configure();
+  ASSERT_EQ(State::PRIMARY_STATE_INACTIVE, state.id());
+  assignResources();
+
+  state = controller_->get_node()->activate();
+  ASSERT_EQ(State::PRIMARY_STATE_ACTIVE, state.id());
+
+  waitForSetup();
+
+  publish_twist(1.0, 0.0, 0.0);
+  controller_->wait_for_twist(executor);
+
+  // Wheel 2 spins backwards at full speed while the others follow the command.
+  wheel_vel_states_[0] = 10.0;
+  wheel_vel_states_[1] = 10.0;
+  wheel_vel_states_[2] = -10.0;
+  wheel_vel_states_[3] = 10.0;
+
+  // Short glitch (< 30 cycles) must NOT disable the wheel
+  for (int step = 0; step < 20; ++step)
+  {
+    ASSERT_EQ(
+      controller_->update_reference_from_subscribers(
+        rclcpp::Time(step / 100, (step % 100) * 10000000, RCL_ROS_TIME), rclcpp::Duration::from_seconds(0.01)),
+      controller_interface::return_type::OK);
+    ASSERT_EQ(
+      controller_->update_and_write_commands(
+        rclcpp::Time(step / 100, (step % 100) * 10000000, RCL_ROS_TIME), rclcpp::Duration::from_seconds(0.01)),
+      controller_interface::return_type::OK);
+  }
+  EXPECT_TRUE(controller_->get_active_wheels()[2]);
+
+  // Sustained reverse rotation must disable the wheel when cutoff is enabled
+  for (int step = 20; step < 60; ++step)
+  {
+    ASSERT_EQ(
+      controller_->update_reference_from_subscribers(
+        rclcpp::Time(step / 100, (step % 100) * 10000000, RCL_ROS_TIME), rclcpp::Duration::from_seconds(0.01)),
+      controller_interface::return_type::OK);
+    ASSERT_EQ(
+      controller_->update_and_write_commands(
+        rclcpp::Time(step / 100, (step % 100) * 10000000, RCL_ROS_TIME), rclcpp::Duration::from_seconds(0.01)),
+      controller_interface::return_type::OK);
+  }
+  EXPECT_FALSE(controller_->get_active_wheels()[2]);
+  EXPECT_TRUE(controller_->get_active_wheels()[0]);
+  EXPECT_TRUE(controller_->get_active_wheels()[1]);
+  EXPECT_TRUE(controller_->get_active_wheels()[3]);
+  // Drive command is cut to 0, never sign-flipped
+  EXPECT_DOUBLE_EQ(command_itfs_[2].get_optional().value(), 0.0);
 
   state = controller_->get_node()->deactivate();
   ASSERT_EQ(state.id(), State::PRIMARY_STATE_INACTIVE);
@@ -615,6 +684,126 @@ TEST_F(SwerveDriveControllerTest, degraded_mode_wheel_commands_and_passive_caste
   state = controller_->get_node()->cleanup();
   ASSERT_EQ(state.id(), State::PRIMARY_STATE_UNCONFIGURED);
   executor.cancel();
+}
+
+// Closed-loop fault injection: a simple plant model feeds the controller's commands back as
+// wheel/steering feedback, with one wheel misbehaving after 20 healthy cycles.
+class SwerveFaultInjectionTest : public SwerveDriveControllerTest
+{
+protected:
+  enum class Fault { DEAD_FREE_ROLLING, REVERSED, LOCKED, HEALTHY_LAGGING_WITH_REVERSAL };
+  // Snapshot taken before deactivate()/cleanup(), which reset all wheels to active.
+  std::array<bool, 4> final_active_{{true, true, true, true}};
+
+  // Runs the loop and returns the final drive commands [rad/s]; active flags via controller_.
+  std::array<double, 4> RunScenario(Fault fault, std::size_t faulty, int total_steps = 150)
+  {
+    EXPECT_EQ(InitController(), controller_interface::return_type::OK);
+    rclcpp::executors::SingleThreadedExecutor executor;
+    executor.add_node(controller_->get_node()->get_node_base_interface());
+    controller_->get_node()->configure();
+    assignResources();
+    controller_->get_node()->activate();
+    waitForSetup();
+
+    const double vx = 1.0, vy = 0.5, radius = 0.1;
+    publish_twist(vx, vy, 0.0);
+    controller_->wait_for_twist(executor);
+    for (std::size_t i = 0; i < 4; ++i) wheel_vel_states_[i] = 0.0;
+
+    double plant_vx = vx;
+    std::array<double, 4> lagged_{{0.0, 0.0, 0.0, 0.0}};
+    for (int step = 0; step < total_steps; ++step)
+    {
+      if (fault == Fault::HEALTHY_LAGGING_WITH_REVERSAL && step == 100)
+      {
+        plant_vx = -vx;  // operator slams the stick the other way
+        publish_twist(-vx, vy, 0.0);
+        controller_->wait_for_twist(executor);
+      }
+      const rclcpp::Time t(step / 100, (step % 100) * 10000000, RCL_ROS_TIME);
+      const auto dt = rclcpp::Duration::from_seconds(0.01);
+      EXPECT_EQ(
+        controller_->update_reference_from_subscribers(t, dt), controller_interface::return_type::OK);
+      EXPECT_EQ(
+        controller_->update_and_write_commands(t, dt), controller_interface::return_type::OK);
+
+      // Plant: steering and healthy drive motors follow their commands perfectly
+      for (std::size_t i = 0; i < 4; ++i)
+      {
+        steering_pos_states_[i] = command_itfs_[4 + i].get_optional().value();
+        const double cmd = command_itfs_[i].get_optional().value();
+        const double roll =
+          (plant_vx * std::cos(steering_pos_states_[i]) + vy * std::sin(steering_pos_states_[i])) / radius;
+        wheel_vel_states_[i] = cmd;
+        if (fault == Fault::HEALTHY_LAGGING_WITH_REVERSAL)
+        {
+          // Healthy motor with a first-order lag (tau = 1.0 s, i.e. slow reversal)
+          lagged_[i] += (cmd - lagged_[i]) * (0.01 / 1.0);
+          wheel_vel_states_[i] = lagged_[i];
+        }
+        if (i == faulty && step >= 20)
+        {
+          switch (fault)
+          {
+            case Fault::DEAD_FREE_ROLLING: wheel_vel_states_[i] = roll; break;
+            case Fault::REVERSED: wheel_vel_states_[i] = (cmd != 0.0) ? -cmd : roll; break;
+            case Fault::LOCKED: wheel_vel_states_[i] = 0.0; break;
+            case Fault::HEALTHY_LAGGING_WITH_REVERSAL: break;
+          }
+        }
+      }
+    }
+
+    std::array<double, 4> out{};
+    for (std::size_t i = 0; i < 4; ++i) out[i] = command_itfs_[i].get_optional().value();
+    final_active_ = controller_->get_active_wheels();
+    controller_->get_node()->deactivate();
+    controller_->get_node()->cleanup();
+    executor.cancel();
+    return out;
+  }
+};
+
+TEST_F(SwerveFaultInjectionTest, reversed_motor_is_isolated_and_others_keep_driving)
+{
+  const auto cmds = RunScenario(Fault::REVERSED, 1);
+  EXPECT_FALSE(final_active_[1]);
+  EXPECT_TRUE(final_active_[0]);
+  EXPECT_TRUE(final_active_[2]);
+  EXPECT_TRUE(final_active_[3]);
+  EXPECT_DOUBLE_EQ(cmds[1], 0.0);
+  const double expected = std::hypot(1.0, 0.5) / 0.1;
+  for (std::size_t i : {0, 2, 3}) EXPECT_NEAR(std::abs(cmds[i]), expected, 0.5);
+}
+
+TEST_F(SwerveFaultInjectionTest, locked_motor_is_isolated_and_others_keep_driving)
+{
+  const auto cmds = RunScenario(Fault::LOCKED, 2);
+  EXPECT_FALSE(final_active_[2]);
+  EXPECT_TRUE(final_active_[0]);
+  EXPECT_TRUE(final_active_[1]);
+  EXPECT_TRUE(final_active_[3]);
+  EXPECT_DOUBLE_EQ(cmds[2], 0.0);
+  const double expected = std::hypot(1.0, 0.5) / 0.1;
+  for (std::size_t i : {0, 1, 3}) EXPECT_NEAR(std::abs(cmds[i]), expected, 0.5);
+}
+
+// Healthy robot, slow motors, operator reverses direction: nothing may be cut off.
+TEST_F(SwerveFaultInjectionTest, rapid_direction_reversal_does_not_trigger_false_positive)
+{
+  RunScenario(Fault::HEALTHY_LAGGING_WITH_REVERSAL, 0, 250);
+  for (std::size_t i = 0; i < 4; ++i) EXPECT_TRUE(final_active_[i]) << "wheel " << i;
+}
+
+// Documents current behaviour: a dead motor that free-rolls (dragged by the others) tracks the
+// commanded speed, so it is NOT detected and stays "active".
+TEST_F(SwerveFaultInjectionTest, dead_free_rolling_motor_behaviour)
+{
+  RunScenario(Fault::DEAD_FREE_ROLLING, 3);
+  std::cout << "[ INFO ] dead free-rolling wheel 3 detected as inactive: " << std::boolalpha
+            << !final_active_[3] << std::endl;
+  SUCCEED();
 }
 
 TEST(SwerveDriveKinematicsTest, test_angle_limits_and_hysteresis)
@@ -801,6 +990,84 @@ TEST(SwerveDriveKinematicsTest, test_tight_turn_bounded_smoothness)
         double jump = std::abs(angles::shortest_angular_distance(current_angles[i], opt_cmds[i].steering_angle));
         EXPECT_LT(jump, M_PI / 3.0);
       }
+      current_angles[i] = opt_cmds[i].steering_angle;
+    }
+  }
+}
+
+TEST(SwerveDriveKinematicsTest, test_snap_reversal_drive_inversion)
+{
+  SwerveDriveKinematics kinematics;
+  kinematics.calculate_wheel_position(0.5, 0.4);
+
+  std::array<double, 4> current_angles = {{0.0, 0.0, 0.0, 0.0}};
+
+  // 1. Forward driving (vx = 1.0, vy = 0.0)
+  auto raw_cmds = kinematics.compute_wheel_commands(1.0, 0.0, 0.0, 0.05);
+  auto opt_cmds = kinematics.optimize_wheel_commands(
+    raw_cmds, current_angles, -M_PI, M_PI, true);
+
+  for (int i = 0; i < 4; ++i)
+  {
+    EXPECT_NEAR(opt_cmds[i].steering_angle, 0.0, 1e-3);
+    EXPECT_NEAR(opt_cmds[i].drive_velocity, 1.0, 1e-3);
+    current_angles[i] = opt_cmds[i].steering_angle;
+  }
+
+  // 2. Sudden snap backward reversal (vx = -1.0, vy = 0.0)
+  // Steer angle must NOT rotate 180 degrees; drive wheel must reverse direction!
+  raw_cmds = kinematics.compute_wheel_commands(-1.0, 0.0, 0.0, 0.05);
+  opt_cmds = kinematics.optimize_wheel_commands(
+    raw_cmds, current_angles, -M_PI, M_PI, true);
+
+  for (int i = 0; i < 4; ++i)
+  {
+    EXPECT_NEAR(opt_cmds[i].steering_angle, 0.0, 1e-3);  // Steer stays at 0.0
+    EXPECT_NEAR(opt_cmds[i].drive_velocity, -1.0, 1e-3); // Drive reverses to -1.0
+    current_angles[i] = opt_cmds[i].steering_angle;
+  }
+
+  // 3. Re-reverse back to forward (vx = 1.0, vy = 0.0)
+  raw_cmds = kinematics.compute_wheel_commands(1.0, 0.0, 0.0, 0.05);
+  opt_cmds = kinematics.optimize_wheel_commands(
+    raw_cmds, current_angles, -M_PI, M_PI, true);
+
+  for (int i = 0; i < 4; ++i)
+  {
+    EXPECT_NEAR(opt_cmds[i].steering_angle, 0.0, 1e-3);
+    EXPECT_NEAR(opt_cmds[i].drive_velocity, 1.0, 1e-3);
+    current_angles[i] = opt_cmds[i].steering_angle;
+  }
+}
+
+TEST(SwerveDriveKinematicsTest, test_rapid_slalom_continuous_tracking)
+{
+  SwerveDriveKinematics kinematics;
+  kinematics.calculate_wheel_position(0.5, 0.4);
+
+  std::array<double, 4> current_angles = {{0.0, 0.0, 0.0, 0.0}};
+
+  // High-speed 2Hz slalom: vx = 1.5 m/s, vy = 1.0 * sin(2*pi*2.0*t)
+  constexpr double dt = 0.01;
+  for (int step = 0; step < 200; ++step)
+  {
+    double t = step * dt;
+    double vx = 1.5;
+    double vy = 1.0 * std::sin(2.0 * M_PI * 2.0 * t);
+
+    auto raw_cmds = kinematics.compute_wheel_commands(vx, vy, 0.0, 0.05);
+    auto opt_cmds = kinematics.optimize_wheel_commands(
+      raw_cmds, current_angles, -M_PI, M_PI, true);
+
+    for (int i = 0; i < 4; ++i)
+    {
+      EXPECT_TRUE(std::isfinite(opt_cmds[i].steering_angle));
+      EXPECT_TRUE(std::isfinite(opt_cmds[i].drive_velocity));
+
+      // No large step discontinuities (> 45 deg) per 10ms cycle during continuous slalom
+      double d_angle = std::abs(angles::shortest_angular_distance(current_angles[i], opt_cmds[i].steering_angle));
+      EXPECT_LT(d_angle, M_PI_4);
+
       current_angles[i] = opt_cmds[i].steering_angle;
     }
   }
@@ -1113,6 +1380,62 @@ TEST(SwerveDriveKinematicsTest, test_robot_physical_limits_250_degrees)
       EXPECT_NEAR(vx_actual, vx, 1e-3);
       EXPECT_NEAR(vy_actual, vy, 1e-3);
 
+      current_angles[i] = opt_cmds[i].steering_angle;
+    }
+  }
+}
+
+TEST(SwerveDriveKinematicsTest, test_zero_velocity_deadband_stability)
+{
+  SwerveDriveKinematics kinematics;
+  kinematics.calculate_wheel_position(0.5, 0.4);
+
+  // Initial steering angle set to 45 deg (0.785 rad)
+  std::array<double, 4> current_angles = {{0.785, 0.785, 0.785, 0.785}};
+
+  // Sub-deadband input (speed < 0.05 m/s): should hold previous steering angle without jumping
+  auto raw_cmds = kinematics.compute_wheel_commands(0.01, 0.01, 0.0, 0.05);
+  auto opt_cmds = kinematics.optimize_wheel_commands(
+    raw_cmds, current_angles, -M_PI, M_PI, true);
+
+  for (int i = 0; i < 4; ++i)
+  {
+    EXPECT_NEAR(opt_cmds[i].steering_angle, 0.785, 1e-4);
+    EXPECT_DOUBLE_EQ(opt_cmds[i].drive_velocity, 0.0);
+  }
+}
+
+TEST(SwerveDriveKinematicsTest, test_frequency_sweep_chirp_simulation)
+{
+  SwerveDriveKinematics kinematics;
+  kinematics.calculate_wheel_position(0.5, 0.4);
+
+  std::array<double, 4> current_angles = {{0.0, 0.0, 0.0, 0.0}};
+
+  // Chirp frequency sweep: f(t) = 0.1 to 10.0 Hz over 10 seconds (1000 steps at dt=0.01s)
+  constexpr double dt = 0.01;
+  constexpr double T_total = 10.0;
+  constexpr double f0 = 0.1;
+  constexpr double f1 = 10.0;
+
+  for (int step = 0; step < 1000; ++step)
+  {
+    double t = step * dt;
+    double phase = 2.0 * M_PI * (f0 * t + 0.5 * (f1 - f0) * t * t / T_total);
+
+    double vx = 1.0 * std::sin(phase);
+    double vy = 0.5 * std::cos(phase);
+    double wz = 0.8 * std::sin(phase * 0.5);
+
+    auto raw_cmds = kinematics.compute_wheel_commands(vx, vy, wz, 0.05);
+    auto opt_cmds = kinematics.optimize_wheel_commands(
+      raw_cmds, current_angles, -2.0 * M_PI, 2.0 * M_PI, false);
+
+    for (int i = 0; i < 4; ++i)
+    {
+      EXPECT_TRUE(std::isfinite(opt_cmds[i].steering_angle));
+      EXPECT_TRUE(std::isfinite(opt_cmds[i].drive_velocity));
+      EXPECT_TRUE(std::isfinite(opt_cmds[i].drive_angular_velocity));
       current_angles[i] = opt_cmds[i].steering_angle;
     }
   }
