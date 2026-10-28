@@ -540,7 +540,9 @@ controller_interface::return_type SwerveController::update_and_write_commands(
   // increment stall counter
   if (!is_stop && !params_.open_loop)
   {
-    // 1. Reverse rotation safety warning (never auto-inverts in software to prevent runaway)
+    // 1. Reverse rotation protection (never auto-inverts in software to prevent runaway).
+    // A wheel that keeps spinning against its command is cut off (like a stall) and the
+    // robot continues in degraded mode. Fix the cause in hardware/config (phase wiring, ESC).
     for (std::size_t i = 0; i < 4; i++)
     {
       if (active_wheels_[i] && wheel_handles_[i].has_value())
@@ -549,11 +551,27 @@ controller_interface::return_type SwerveController::update_and_write_commands(
         double meas_v = wheel_handles_[i]->get_feedback() * params_.wheel_radius;
         if (std::abs(cmd_v) > 0.30 && (cmd_v * meas_v < -0.10))
         {
+          reverse_counter_[i]++;
           RCLCPP_WARN_THROTTLE(
             logger, *get_node()->get_clock(), 1000,
             "⚠️ [SwerveController] Wheel %zu (%s) appears to be ROTATING IN REVERSE! "
             "(cmd: %.2f m/s, actual: %.2f m/s). Check motor phase wiring or ESC configuration!",
             i, wheel_joint_names[i].c_str(), cmd_v, meas_v);
+          if (reverse_counter_[i] > 30)  // ~0.3s at 100Hz
+          {
+            active_wheels_[i] = false;
+            wheel_command[i].drive_velocity = 0.0;
+            wheel_command[i].drive_angular_velocity = 0.0;
+            RCLCPP_ERROR(
+              logger,
+              "[SwerveController] Wheel %zu (%s) rotating in REVERSE for too long. "
+              "Drive cut off, degraded drive mode active.",
+              i, wheel_joint_names[i].c_str());
+          }
+        }
+        else
+        {
+          reverse_counter_[i] = 0;
         }
       }
     }
@@ -720,6 +738,7 @@ bool SwerveController::reset()
   active_wheels_.fill(true);
   user_disabled_wheels_.fill(false);
   stall_counter_.fill(0);
+  reverse_counter_.fill(0);
   recovery_cooldown_counter_.fill(0);
 
   TwistStamped zero_twist;

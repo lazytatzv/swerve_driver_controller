@@ -445,11 +445,11 @@ TEST_F(SwerveDriveControllerTest, stall_detection_and_auto_recovery)
   {
     ASSERT_EQ(
       controller_->update_reference_from_subscribers(
-        rclcpp::Time(0, step * 10000000, RCL_ROS_TIME), rclcpp::Duration::from_seconds(0.01)),
+        rclcpp::Time(step / 100, (step % 100) * 10000000, RCL_ROS_TIME), rclcpp::Duration::from_seconds(0.01)),
       controller_interface::return_type::OK);
     ASSERT_EQ(
       controller_->update_and_write_commands(
-        rclcpp::Time(0, step * 10000000, RCL_ROS_TIME), rclcpp::Duration::from_seconds(0.01)),
+        rclcpp::Time(step / 100, (step % 100) * 10000000, RCL_ROS_TIME), rclcpp::Duration::from_seconds(0.01)),
       controller_interface::return_type::OK);
   }
 
@@ -471,11 +471,11 @@ TEST_F(SwerveDriveControllerTest, stall_detection_and_auto_recovery)
   {
     ASSERT_EQ(
       controller_->update_reference_from_subscribers(
-        rclcpp::Time(0, step * 10000000, RCL_ROS_TIME), rclcpp::Duration::from_seconds(0.01)),
+        rclcpp::Time(step / 100, (step % 100) * 10000000, RCL_ROS_TIME), rclcpp::Duration::from_seconds(0.01)),
       controller_interface::return_type::OK);
     ASSERT_EQ(
       controller_->update_and_write_commands(
-        rclcpp::Time(0, step * 10000000, RCL_ROS_TIME), rclcpp::Duration::from_seconds(0.01)),
+        rclcpp::Time(step / 100, (step % 100) * 10000000, RCL_ROS_TIME), rclcpp::Duration::from_seconds(0.01)),
       controller_interface::return_type::OK);
   }
 
@@ -483,6 +483,69 @@ TEST_F(SwerveDriveControllerTest, stall_detection_and_auto_recovery)
   EXPECT_TRUE(controller_->get_active_wheels()[1]);
 
   // Deactivate and cleanup
+  state = controller_->get_node()->deactivate();
+  ASSERT_EQ(state.id(), State::PRIMARY_STATE_INACTIVE);
+  state = controller_->get_node()->cleanup();
+  ASSERT_EQ(state.id(), State::PRIMARY_STATE_UNCONFIGURED);
+  executor.cancel();
+}
+
+TEST_F(SwerveDriveControllerTest, reversed_wheel_is_cut_off_not_inverted)
+{
+  ASSERT_EQ(InitController(), controller_interface::return_type::OK);
+
+  rclcpp::executors::SingleThreadedExecutor executor;
+  executor.add_node(controller_->get_node()->get_node_base_interface());
+
+  auto state = controller_->get_node()->configure();
+  ASSERT_EQ(State::PRIMARY_STATE_INACTIVE, state.id());
+  assignResources();
+  state = controller_->get_node()->activate();
+  ASSERT_EQ(State::PRIMARY_STATE_ACTIVE, state.id());
+  waitForSetup();
+
+  publish_twist(1.0, 0.0, 0.0);
+  controller_->wait_for_twist(executor);
+
+  // Wheel 2 spins backwards at full speed while the others follow the command.
+  wheel_vel_states_[0] = 10.0;
+  wheel_vel_states_[1] = 10.0;
+  wheel_vel_states_[2] = -10.0;
+  wheel_vel_states_[3] = 10.0;
+
+  // Short glitch (< 30 cycles) must NOT disable the wheel
+  for (int step = 0; step < 20; ++step)
+  {
+    ASSERT_EQ(
+      controller_->update_reference_from_subscribers(
+        rclcpp::Time(step / 100, (step % 100) * 10000000, RCL_ROS_TIME), rclcpp::Duration::from_seconds(0.01)),
+      controller_interface::return_type::OK);
+    ASSERT_EQ(
+      controller_->update_and_write_commands(
+        rclcpp::Time(step / 100, (step % 100) * 10000000, RCL_ROS_TIME), rclcpp::Duration::from_seconds(0.01)),
+      controller_interface::return_type::OK);
+  }
+  EXPECT_TRUE(controller_->get_active_wheels()[2]);
+
+  // Sustained reverse rotation must disable the wheel
+  for (int step = 20; step < 60; ++step)
+  {
+    ASSERT_EQ(
+      controller_->update_reference_from_subscribers(
+        rclcpp::Time(step / 100, (step % 100) * 10000000, RCL_ROS_TIME), rclcpp::Duration::from_seconds(0.01)),
+      controller_interface::return_type::OK);
+    ASSERT_EQ(
+      controller_->update_and_write_commands(
+        rclcpp::Time(step / 100, (step % 100) * 10000000, RCL_ROS_TIME), rclcpp::Duration::from_seconds(0.01)),
+      controller_interface::return_type::OK);
+  }
+  EXPECT_FALSE(controller_->get_active_wheels()[2]);
+  EXPECT_TRUE(controller_->get_active_wheels()[0]);
+  EXPECT_TRUE(controller_->get_active_wheels()[1]);
+  EXPECT_TRUE(controller_->get_active_wheels()[3]);
+  // Drive command is cut to 0, never sign-flipped
+  EXPECT_DOUBLE_EQ(command_itfs_[2].get_optional().value(), 0.0);
+
   state = controller_->get_node()->deactivate();
   ASSERT_EQ(state.id(), State::PRIMARY_STATE_INACTIVE);
   state = controller_->get_node()->cleanup();
