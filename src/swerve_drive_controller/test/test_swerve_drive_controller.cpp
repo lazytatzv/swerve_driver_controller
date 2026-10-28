@@ -1007,6 +1007,11 @@ TEST(SwerveDriveKinematicsTest, test_rapid_slalom_continuous_tracking)
       double d_angle = std::abs(angles::shortest_angular_distance(current_angles[i], opt_cmds[i].steering_angle));
       EXPECT_LT(d_angle, M_PI_4);
 
+      current_angles[i] = opt_cmds[i].steering_angle;
+    }
+  }
+}
+
 TEST(SwerveDriveKinematicsTest, test_forward_inverse_roundtrip_exhaustive)
 {
   SwerveDriveKinematics kinematics;
@@ -1372,6 +1377,8 @@ TEST(SwerveDriveKinematicsTest, test_frequency_sweep_chirp_simulation)
       EXPECT_TRUE(std::isfinite(opt_cmds[i].drive_angular_velocity));
       current_angles[i] = opt_cmds[i].steering_angle;
     }
+  }
+}
 
 TEST(SwerveDriveKinematicsTest, test_degraded_3_wheel_fault_tolerant_odometry)
 {
