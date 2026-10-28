@@ -625,6 +625,104 @@ TEST_F(SwerveDriveControllerTest, degraded_mode_wheel_commands_and_passive_caste
   executor.cancel();
 }
 
+// Closed-loop fault injection: a simple plant model feeds the controller's commands back as
+// wheel/steering feedback, with one wheel misbehaving after 20 healthy cycles.
+class SwerveFaultInjectionTest : public SwerveDriveControllerTest
+{
+protected:
+  enum class Fault { DEAD_FREE_ROLLING, REVERSED, LOCKED };
+  // Snapshot taken before deactivate()/cleanup(), which reset all wheels to active.
+  std::array<bool, 4> final_active_{{true, true, true, true}};
+
+  // Runs the loop and returns the final drive commands [rad/s]; active flags via controller_.
+  std::array<double, 4> RunScenario(Fault fault, std::size_t faulty, int total_steps = 150)
+  {
+    EXPECT_EQ(InitController(), controller_interface::return_type::OK);
+    rclcpp::executors::SingleThreadedExecutor executor;
+    executor.add_node(controller_->get_node()->get_node_base_interface());
+    controller_->get_node()->configure();
+    assignResources();
+    controller_->get_node()->activate();
+    waitForSetup();
+
+    const double vx = 1.0, vy = 0.5, radius = 0.1;
+    publish_twist(vx, vy, 0.0);
+    controller_->wait_for_twist(executor);
+    for (std::size_t i = 0; i < 4; ++i) wheel_vel_states_[i] = 0.0;
+
+    for (int step = 0; step < total_steps; ++step)
+    {
+      const rclcpp::Time t(step / 100, (step % 100) * 10000000, RCL_ROS_TIME);
+      const auto dt = rclcpp::Duration::from_seconds(0.01);
+      EXPECT_EQ(
+        controller_->update_reference_from_subscribers(t, dt), controller_interface::return_type::OK);
+      EXPECT_EQ(
+        controller_->update_and_write_commands(t, dt), controller_interface::return_type::OK);
+
+      // Plant: steering and healthy drive motors follow their commands perfectly
+      for (std::size_t i = 0; i < 4; ++i)
+      {
+        steering_pos_states_[i] = command_itfs_[4 + i].get_optional().value();
+        const double cmd = command_itfs_[i].get_optional().value();
+        const double roll =
+          (vx * std::cos(steering_pos_states_[i]) + vy * std::sin(steering_pos_states_[i])) / radius;
+        wheel_vel_states_[i] = cmd;
+        if (i == faulty && step >= 20)
+        {
+          switch (fault)
+          {
+            case Fault::DEAD_FREE_ROLLING: wheel_vel_states_[i] = roll; break;
+            case Fault::REVERSED: wheel_vel_states_[i] = (cmd != 0.0) ? -cmd : roll; break;
+            case Fault::LOCKED: wheel_vel_states_[i] = 0.0; break;
+          }
+        }
+      }
+    }
+
+    std::array<double, 4> out{};
+    for (std::size_t i = 0; i < 4; ++i) out[i] = command_itfs_[i].get_optional().value();
+    final_active_ = controller_->get_active_wheels();
+    controller_->get_node()->deactivate();
+    controller_->get_node()->cleanup();
+    executor.cancel();
+    return out;
+  }
+};
+
+TEST_F(SwerveFaultInjectionTest, reversed_motor_is_isolated_and_others_keep_driving)
+{
+  const auto cmds = RunScenario(Fault::REVERSED, 1);
+  EXPECT_FALSE(final_active_[1]);
+  EXPECT_TRUE(final_active_[0]);
+  EXPECT_TRUE(final_active_[2]);
+  EXPECT_TRUE(final_active_[3]);
+  EXPECT_DOUBLE_EQ(cmds[1], 0.0);
+  const double expected = std::hypot(1.0, 0.5) / 0.1;
+  for (std::size_t i : {0, 2, 3}) EXPECT_NEAR(std::abs(cmds[i]), expected, 0.5);
+}
+
+TEST_F(SwerveFaultInjectionTest, locked_motor_is_isolated_and_others_keep_driving)
+{
+  const auto cmds = RunScenario(Fault::LOCKED, 2);
+  EXPECT_FALSE(final_active_[2]);
+  EXPECT_TRUE(final_active_[0]);
+  EXPECT_TRUE(final_active_[1]);
+  EXPECT_TRUE(final_active_[3]);
+  EXPECT_DOUBLE_EQ(cmds[2], 0.0);
+  const double expected = std::hypot(1.0, 0.5) / 0.1;
+  for (std::size_t i : {0, 1, 3}) EXPECT_NEAR(std::abs(cmds[i]), expected, 0.5);
+}
+
+// Documents current behaviour: a dead motor that free-rolls (dragged by the others) tracks the
+// commanded speed, so it is NOT detected and stays "active".
+TEST_F(SwerveFaultInjectionTest, dead_free_rolling_motor_behaviour)
+{
+  RunScenario(Fault::DEAD_FREE_ROLLING, 3);
+  std::cout << "[ INFO ] dead free-rolling wheel 3 detected as inactive: " << std::boolalpha
+            << !final_active_[3] << std::endl;
+  SUCCEED();
+}
+
 TEST(SwerveDriveKinematicsTest, test_angle_limits_and_hysteresis)
 {
   SwerveDriveKinematics kinematics;
