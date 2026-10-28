@@ -239,7 +239,6 @@ std::array<WheelCommand, 4> SwerveDriveKinematics::optimize_wheel_commands(
         }
       }
     }
-    }
 
     previous_inversion_[i] = choose_B;
 

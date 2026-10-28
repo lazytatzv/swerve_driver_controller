@@ -698,7 +698,12 @@ protected:
   // Runs the loop and returns the final drive commands [rad/s]; active flags via controller_.
   std::array<double, 4> RunScenario(Fault fault, std::size_t faulty, int total_steps = 150)
   {
-    EXPECT_EQ(InitController(), controller_interface::return_type::OK);
+    EXPECT_EQ(
+      InitController(
+        wheel_joint_names_, steering_joint_names_,
+        {rclcpp::Parameter("enable_auto_fault_cutoff", rclcpp::ParameterValue(true)),
+         rclcpp::Parameter("stall_timeout_sec", rclcpp::ParameterValue(0.5))}),
+      controller_interface::return_type::OK);
     rclcpp::executors::SingleThreadedExecutor executor;
     executor.add_node(controller_->get_node()->get_node_base_interface());
     controller_->get_node()->configure();
