@@ -549,7 +549,24 @@ controller_interface::return_type SwerveController::update_and_write_commands(
       {
         double cmd_v = wheel_command[i].drive_velocity;
         double meas_v = wheel_handles_[i]->get_feedback() * params_.wheel_radius;
-        if (std::abs(cmd_v) > 0.30 && (cmd_v * meas_v < -0.10))
+        // A commanded direction change (e.g. rapid reversal) legitimately produces a transient
+        // where the wheel still spins the old way. Give it a grace period before judging.
+        if (std::abs(cmd_v) > 0.30)
+        {
+          const int sign = cmd_v > 0.0 ? 1 : -1;
+          if (reverse_cmd_sign_[i] != 0 && sign != reverse_cmd_sign_[i])
+          {
+            reverse_grace_[i] = 50;  // ~0.5s at 100Hz
+            reverse_counter_[i] = 0;
+          }
+          reverse_cmd_sign_[i] = sign;
+        }
+        if (reverse_grace_[i] > 0)
+        {
+          --reverse_grace_[i];
+          reverse_counter_[i] = 0;
+        }
+        else if (std::abs(cmd_v) > 0.30 && (cmd_v * meas_v < -0.10))
         {
           reverse_counter_[i]++;
           RCLCPP_WARN_THROTTLE(
@@ -739,6 +756,8 @@ bool SwerveController::reset()
   user_disabled_wheels_.fill(false);
   stall_counter_.fill(0);
   reverse_counter_.fill(0);
+  reverse_grace_.fill(0);
+  reverse_cmd_sign_.fill(0);
   recovery_cooldown_counter_.fill(0);
 
   TwistStamped zero_twist;

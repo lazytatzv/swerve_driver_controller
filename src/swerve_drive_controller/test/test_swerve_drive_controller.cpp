@@ -630,7 +630,7 @@ TEST_F(SwerveDriveControllerTest, degraded_mode_wheel_commands_and_passive_caste
 class SwerveFaultInjectionTest : public SwerveDriveControllerTest
 {
 protected:
-  enum class Fault { DEAD_FREE_ROLLING, REVERSED, LOCKED };
+  enum class Fault { DEAD_FREE_ROLLING, REVERSED, LOCKED, HEALTHY_LAGGING_WITH_REVERSAL };
   // Snapshot taken before deactivate()/cleanup(), which reset all wheels to active.
   std::array<bool, 4> final_active_{{true, true, true, true}};
 
@@ -650,8 +650,16 @@ protected:
     controller_->wait_for_twist(executor);
     for (std::size_t i = 0; i < 4; ++i) wheel_vel_states_[i] = 0.0;
 
+    double plant_vx = vx;
+    std::array<double, 4> lagged_{{0.0, 0.0, 0.0, 0.0}};
     for (int step = 0; step < total_steps; ++step)
     {
+      if (fault == Fault::HEALTHY_LAGGING_WITH_REVERSAL && step == 100)
+      {
+        plant_vx = -vx;  // operator slams the stick the other way
+        publish_twist(-vx, vy, 0.0);
+        controller_->wait_for_twist(executor);
+      }
       const rclcpp::Time t(step / 100, (step % 100) * 10000000, RCL_ROS_TIME);
       const auto dt = rclcpp::Duration::from_seconds(0.01);
       EXPECT_EQ(
@@ -665,8 +673,14 @@ protected:
         steering_pos_states_[i] = command_itfs_[4 + i].get_optional().value();
         const double cmd = command_itfs_[i].get_optional().value();
         const double roll =
-          (vx * std::cos(steering_pos_states_[i]) + vy * std::sin(steering_pos_states_[i])) / radius;
+          (plant_vx * std::cos(steering_pos_states_[i]) + vy * std::sin(steering_pos_states_[i])) / radius;
         wheel_vel_states_[i] = cmd;
+        if (fault == Fault::HEALTHY_LAGGING_WITH_REVERSAL)
+        {
+          // Healthy motor with a first-order lag (tau = 0.15 s)
+          lagged_[i] += (cmd - lagged_[i]) * (0.01 / 0.15);
+          wheel_vel_states_[i] = lagged_[i];
+        }
         if (i == faulty && step >= 20)
         {
           switch (fault)
@@ -674,6 +688,7 @@ protected:
             case Fault::DEAD_FREE_ROLLING: wheel_vel_states_[i] = roll; break;
             case Fault::REVERSED: wheel_vel_states_[i] = (cmd != 0.0) ? -cmd : roll; break;
             case Fault::LOCKED: wheel_vel_states_[i] = 0.0; break;
+            case Fault::HEALTHY_LAGGING_WITH_REVERSAL: break;
           }
         }
       }
@@ -711,6 +726,13 @@ TEST_F(SwerveFaultInjectionTest, locked_motor_is_isolated_and_others_keep_drivin
   EXPECT_DOUBLE_EQ(cmds[2], 0.0);
   const double expected = std::hypot(1.0, 0.5) / 0.1;
   for (std::size_t i : {0, 1, 3}) EXPECT_NEAR(std::abs(cmds[i]), expected, 0.5);
+}
+
+// Healthy robot, slow motors, operator reverses direction: nothing may be cut off.
+TEST_F(SwerveFaultInjectionTest, rapid_direction_reversal_does_not_trigger_false_positive)
+{
+  RunScenario(Fault::HEALTHY_LAGGING_WITH_REVERSAL, 0, 250);
+  for (std::size_t i = 0; i < 4; ++i) EXPECT_TRUE(final_active_[i]) << "wheel " << i;
 }
 
 // Documents current behaviour: a dead motor that free-rolls (dragged by the others) tracks the
