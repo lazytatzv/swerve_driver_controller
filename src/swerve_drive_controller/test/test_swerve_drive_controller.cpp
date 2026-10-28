@@ -934,6 +934,79 @@ TEST(SwerveDriveKinematicsTest, test_tight_turn_bounded_smoothness)
   }
 }
 
+TEST(SwerveDriveKinematicsTest, test_snap_reversal_drive_inversion)
+{
+  SwerveDriveKinematics kinematics;
+  kinematics.calculate_wheel_position(0.5, 0.4);
+
+  std::array<double, 4> current_angles = {{0.0, 0.0, 0.0, 0.0}};
+
+  // 1. Forward driving (vx = 1.0, vy = 0.0)
+  auto raw_cmds = kinematics.compute_wheel_commands(1.0, 0.0, 0.0, 0.05);
+  auto opt_cmds = kinematics.optimize_wheel_commands(
+    raw_cmds, current_angles, -M_PI, M_PI, true);
+
+  for (int i = 0; i < 4; ++i)
+  {
+    EXPECT_NEAR(opt_cmds[i].steering_angle, 0.0, 1e-3);
+    EXPECT_NEAR(opt_cmds[i].drive_velocity, 1.0, 1e-3);
+    current_angles[i] = opt_cmds[i].steering_angle;
+  }
+
+  // 2. Sudden snap backward reversal (vx = -1.0, vy = 0.0)
+  // Steer angle must NOT rotate 180 degrees; drive wheel must reverse direction!
+  raw_cmds = kinematics.compute_wheel_commands(-1.0, 0.0, 0.0, 0.05);
+  opt_cmds = kinematics.optimize_wheel_commands(
+    raw_cmds, current_angles, -M_PI, M_PI, true);
+
+  for (int i = 0; i < 4; ++i)
+  {
+    EXPECT_NEAR(opt_cmds[i].steering_angle, 0.0, 1e-3);  // Steer stays at 0.0
+    EXPECT_NEAR(opt_cmds[i].drive_velocity, -1.0, 1e-3); // Drive reverses to -1.0
+    current_angles[i] = opt_cmds[i].steering_angle;
+  }
+
+  // 3. Re-reverse back to forward (vx = 1.0, vy = 0.0)
+  raw_cmds = kinematics.compute_wheel_commands(1.0, 0.0, 0.0, 0.05);
+  opt_cmds = kinematics.optimize_wheel_commands(
+    raw_cmds, current_angles, -M_PI, M_PI, true);
+
+  for (int i = 0; i < 4; ++i)
+  {
+    EXPECT_NEAR(opt_cmds[i].steering_angle, 0.0, 1e-3);
+    EXPECT_NEAR(opt_cmds[i].drive_velocity, 1.0, 1e-3);
+    current_angles[i] = opt_cmds[i].steering_angle;
+  }
+}
+
+TEST(SwerveDriveKinematicsTest, test_rapid_slalom_continuous_tracking)
+{
+  SwerveDriveKinematics kinematics;
+  kinematics.calculate_wheel_position(0.5, 0.4);
+
+  std::array<double, 4> current_angles = {{0.0, 0.0, 0.0, 0.0}};
+
+  // High-speed 2Hz slalom: vx = 1.5 m/s, vy = 1.0 * sin(2*pi*2.0*t)
+  constexpr double dt = 0.01;
+  for (int step = 0; step < 200; ++step)
+  {
+    double t = step * dt;
+    double vx = 1.5;
+    double vy = 1.0 * std::sin(2.0 * M_PI * 2.0 * t);
+
+    auto raw_cmds = kinematics.compute_wheel_commands(vx, vy, 0.0, 0.05);
+    auto opt_cmds = kinematics.optimize_wheel_commands(
+      raw_cmds, current_angles, -M_PI, M_PI, true);
+
+    for (int i = 0; i < 4; ++i)
+    {
+      EXPECT_TRUE(std::isfinite(opt_cmds[i].steering_angle));
+      EXPECT_TRUE(std::isfinite(opt_cmds[i].drive_velocity));
+
+      // No large step discontinuities (> 45 deg) per 10ms cycle during continuous slalom
+      double d_angle = std::abs(angles::shortest_angular_distance(current_angles[i], opt_cmds[i].steering_angle));
+      EXPECT_LT(d_angle, M_PI_4);
+
 TEST(SwerveDriveKinematicsTest, test_forward_inverse_roundtrip_exhaustive)
 {
   SwerveDriveKinematics kinematics;
@@ -1245,6 +1318,60 @@ TEST(SwerveDriveKinematicsTest, test_robot_physical_limits_250_degrees)
     }
   }
 }
+
+TEST(SwerveDriveKinematicsTest, test_zero_velocity_deadband_stability)
+{
+  SwerveDriveKinematics kinematics;
+  kinematics.calculate_wheel_position(0.5, 0.4);
+
+  // Initial steering angle set to 45 deg (0.785 rad)
+  std::array<double, 4> current_angles = {{0.785, 0.785, 0.785, 0.785}};
+
+  // Sub-deadband input (speed < 0.05 m/s): should hold previous steering angle without jumping
+  auto raw_cmds = kinematics.compute_wheel_commands(0.01, 0.01, 0.0, 0.05);
+  auto opt_cmds = kinematics.optimize_wheel_commands(
+    raw_cmds, current_angles, -M_PI, M_PI, true);
+
+  for (int i = 0; i < 4; ++i)
+  {
+    EXPECT_NEAR(opt_cmds[i].steering_angle, 0.785, 1e-4);
+    EXPECT_DOUBLE_EQ(opt_cmds[i].drive_velocity, 0.0);
+  }
+}
+
+TEST(SwerveDriveKinematicsTest, test_frequency_sweep_chirp_simulation)
+{
+  SwerveDriveKinematics kinematics;
+  kinematics.calculate_wheel_position(0.5, 0.4);
+
+  std::array<double, 4> current_angles = {{0.0, 0.0, 0.0, 0.0}};
+
+  // Chirp frequency sweep: f(t) = 0.1 to 10.0 Hz over 10 seconds (1000 steps at dt=0.01s)
+  constexpr double dt = 0.01;
+  constexpr double T_total = 10.0;
+  constexpr double f0 = 0.1;
+  constexpr double f1 = 10.0;
+
+  for (int step = 0; step < 1000; ++step)
+  {
+    double t = step * dt;
+    double phase = 2.0 * M_PI * (f0 * t + 0.5 * (f1 - f0) * t * t / T_total);
+
+    double vx = 1.0 * std::sin(phase);
+    double vy = 0.5 * std::cos(phase);
+    double wz = 0.8 * std::sin(phase * 0.5);
+
+    auto raw_cmds = kinematics.compute_wheel_commands(vx, vy, wz, 0.05);
+    auto opt_cmds = kinematics.optimize_wheel_commands(
+      raw_cmds, current_angles, -2.0 * M_PI, 2.0 * M_PI, false);
+
+    for (int i = 0; i < 4; ++i)
+    {
+      EXPECT_TRUE(std::isfinite(opt_cmds[i].steering_angle));
+      EXPECT_TRUE(std::isfinite(opt_cmds[i].drive_velocity));
+      EXPECT_TRUE(std::isfinite(opt_cmds[i].drive_angular_velocity));
+      current_angles[i] = opt_cmds[i].steering_angle;
+    }
 
 TEST(SwerveDriveKinematicsTest, test_degraded_3_wheel_fault_tolerant_odometry)
 {

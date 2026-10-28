@@ -320,6 +320,19 @@ CallbackReturn SwerveController::on_configure(const rclcpp_lifecycle::State & /*
     odometry_transform_message_.transforms.front().header.frame_id = odom_frame_id;
     odometry_transform_message_.transforms.front().child_frame_id = base_frame_id;
 
+    joint_commands_publisher_ = get_node()->create_publisher<sensor_msgs::msg::JointState>(
+      "~/joint_commands", rclcpp::SystemDefaultsQoS());
+    realtime_joint_commands_publisher_ =
+      std::make_shared<realtime_tools::RealtimePublisher<sensor_msgs::msg::JointState>>(
+        joint_commands_publisher_);
+    joint_commands_message_.name = {
+      axle_joint_names[0], axle_joint_names[1], axle_joint_names[2], axle_joint_names[3],
+      wheel_joint_names[0], wheel_joint_names[1], wheel_joint_names[2], wheel_joint_names[3]
+    };
+    joint_commands_message_.position.resize(8, 0.0);
+    joint_commands_message_.velocity.resize(8, 0.0);
+    joint_commands_message_.effort.resize(8, 0.0);
+
     previous_update_timestamp_ = get_node()->get_clock()->now();
   }
   catch (const std::exception & e)
@@ -364,12 +377,18 @@ CallbackReturn SwerveController::on_activate(const rclcpp_lifecycle::State &)
       RCLCPP_ERROR(logger, "ERROR IN FETCHING axle handle for: %s", axle_joint_names[i].c_str());
       return CallbackReturn::ERROR;
     }
-    axle_handles_[i]->set_position(0.0);
-    previous_steering_angles_[i] = axle_handles_[i]->get_feedback();
+    double current_pos = axle_handles_[i]->get_feedback();
+    axle_handles_[i]->set_position(current_pos);
+    previous_steering_angles_[i] = current_pos;
   }
 
   is_halted_ = false;
   subscriber_is_active_ = true;
+  limited_vx_ = 0.0;
+  limited_vy_ = 0.0;
+  limited_wz_ = 0.0;
+  previous_command_timestamp_ = rclcpp::Time(0, 0, RCL_CLOCK_UNINITIALIZED);
+  swerveDriveKinematics_.reset_inversion_state();
   RCLCPP_INFO(logger, "Subscriber and publisher are now active.");
   return CallbackReturn::SUCCESS;
 }
@@ -423,18 +442,76 @@ controller_interface::return_type SwerveController::update_and_write_commands(
     return controller_interface::return_type::OK;
   }
 
-  double linear_x_cmd = reference_interfaces_[0];
-  double linear_y_cmd = reference_interfaces_[1];
-  double angular_cmd = reference_interfaces_[2];
+  double target_vx = reference_interfaces_[0];
+  double target_vy = reference_interfaces_[1];
+  double target_wz = reference_interfaces_[2];
 
-  if (!std::isfinite(linear_x_cmd) || !std::isfinite(linear_y_cmd) || !std::isfinite(angular_cmd))
+  if (!std::isfinite(target_vx) || !std::isfinite(target_vy) || !std::isfinite(target_wz))
   {
     // NaNs occur on initialization when the reference interfaces are not yet set
     return controller_interface::return_type::OK;
   }
 
-  const bool is_stop = (std::fabs(linear_x_cmd) < EPS) && (std::fabs(linear_y_cmd) < EPS) &&
-                       (std::fabs(angular_cmd) < EPS);
+  // Acceleration slew-rate limiter
+  double dt = 0.0;
+  if (previous_command_timestamp_.nanoseconds() > 0)
+  {
+    dt = (time - previous_command_timestamp_).seconds();
+  }
+  previous_command_timestamp_ = time;
+
+  if (dt > 0.0001 && dt < 1.0)
+  {
+    if (params_.max_linear_acceleration > 0.0)
+    {
+      double max_dv = params_.max_linear_acceleration * dt;
+      double dv_x = target_vx - limited_vx_;
+      double dv_y = target_vy - limited_vy_;
+      double dv_mag = std::hypot(dv_x, dv_y);
+      if (dv_mag > max_dv)
+      {
+        limited_vx_ += (dv_x / dv_mag) * max_dv;
+        limited_vy_ += (dv_y / dv_mag) * max_dv;
+      }
+      else
+      {
+        limited_vx_ = target_vx;
+        limited_vy_ = target_vy;
+      }
+    }
+    else
+    {
+      limited_vx_ = target_vx;
+      limited_vy_ = target_vy;
+    }
+
+    if (params_.max_angular_acceleration > 0.0)
+    {
+      double max_dw = params_.max_angular_acceleration * dt;
+      double dw = target_wz - limited_wz_;
+      if (std::abs(dw) > max_dw)
+      {
+        limited_wz_ += std::copysign(max_dw, dw);
+      }
+      else
+      {
+        limited_wz_ = target_wz;
+      }
+    }
+    else
+    {
+      limited_wz_ = target_wz;
+    }
+  }
+  else
+  {
+    limited_vx_ = target_vx;
+    limited_vy_ = target_vy;
+    limited_wz_ = target_wz;
+  }
+
+  const bool is_stop = (std::fabs(limited_vx_) < EPS) && (std::fabs(limited_vy_) < EPS) &&
+                       (std::fabs(limited_wz_) < EPS);
 
   std::array<double, 4> current_steering_angles{};
   for (std::size_t i = 0; i < 4; ++i)
@@ -483,7 +560,7 @@ controller_interface::return_type SwerveController::update_and_write_commands(
   else
   {
     wheel_command = swerveDriveKinematics_.compute_wheel_commands(
-      linear_x_cmd, linear_y_cmd, angular_cmd, params_.wheel_radius);
+      limited_vx_, limited_vy_, limited_wz_, params_.wheel_radius);
 
     // Optimize against previous commanded reference angles (not lagging feedback) to prevent
     // mid-maneuver reversals caused by actuator tracking latency
@@ -494,38 +571,55 @@ controller_interface::return_type SwerveController::update_and_write_commands(
         params_.enable_steering_angle_limits);
   }
 
-  std::vector<std::tuple<WheelCommand &, double, std::string>> wheel_data = {
-    {wheel_command[0], params_.front_left_velocity_threshold / params_.wheel_radius,
-     "front_left_wheel"},
-    {wheel_command[1], params_.front_right_velocity_threshold / params_.wheel_radius,
-     "front_right_wheel"},
-    {wheel_command[2], params_.rear_left_velocity_threshold / params_.wheel_radius,
-     "rear_left_wheel"},
-    {wheel_command[3], params_.rear_right_velocity_threshold / params_.wheel_radius,
-     "rear_right_wheel"}};
-
-  for (auto & [wheel_command_, threshold, label] : wheel_data)
+  // 1. Proportional Desaturation across all 4 wheels to preserve commanded curvature
+  double max_speed = 0.0;
+  for (std::size_t i = 0; i < 4; ++i)
   {
-    wheel_command_.drive_velocity = std::clamp(wheel_command_.drive_velocity, -threshold, threshold);
-    if (params_.wheel_radius > 0.0)
+    max_speed = std::max(max_speed, std::abs(wheel_command[i].drive_velocity));
+  }
+  const double max_allowed_velocity = params_.front_left_velocity_threshold;
+  if (max_speed > max_allowed_velocity && max_speed > 0.0)
+  {
+    const double scale = max_allowed_velocity / max_speed;
+    for (std::size_t i = 0; i < 4; ++i)
     {
-      wheel_command_.drive_angular_velocity = wheel_command_.drive_velocity / params_.wheel_radius;
+      wheel_command[i].drive_velocity *= scale;
     }
   }
 
+  // 2. Compute drive angular velocities
+  for (std::size_t i = 0; i < 4; ++i)
+  {
+    if (params_.wheel_radius > 0.0)
+    {
+      wheel_command[i].drive_angular_velocity = wheel_command[i].drive_velocity / params_.wheel_radius;
+    }
+  }
+
+  // 3. Synchronized steering-error velocity scaling (unifies all 4 wheels to avoid yaw skew)
+  // Allows 100% full speed within a 25-degree tracking error deadband for agile, responsive drive.
+  // Smoothly scales down with cosine roll-off only during large angular transitions, never below 30%.
+  constexpr double error_deadband = 0.436332;  // 25 degrees in radians
+  double min_velocity_scale = 1.0;
   for (std::size_t i = 0; i < 4; i++)
   {
     double steering_error = std::abs(
       angles::shortest_angular_distance(
         current_steering_angles[i], wheel_command[i].steering_angle));
 
-    // Smooth continuous velocity scaling based on cosine of steering error:
-    // Full speed when aligned (error=0), smoothly reduces to 0 when wheels are perpendicular (90 deg).
-    double velocity_scale = std::max(0.0, std::cos(steering_error));
+    double scale = 1.0;
+    if (steering_error > error_deadband)
+    {
+      scale = std::max(0.3, std::cos(steering_error - error_deadband));
+    }
+    min_velocity_scale = std::min(min_velocity_scale, scale);
+  }
 
-    // Apply velocity scaling
-    wheel_command[i].drive_velocity *= velocity_scale;
-    wheel_command[i].drive_angular_velocity *= velocity_scale;
+  for (std::size_t i = 0; i < 4; i++)
+  {
+    // Apply coordinated velocity scaling
+    wheel_command[i].drive_velocity *= min_velocity_scale;
+    wheel_command[i].drive_angular_velocity *= min_velocity_scale;
 
     // Fault-tolerant degraded mode: zero drive speed on disabled wheels
     if (!active_wheels_[i])
@@ -712,6 +806,21 @@ controller_interface::return_type SwerveController::update_and_write_commands(
     transform.transform.rotation.w = orientation.w();
     realtime_odometry_transform_publisher_->try_publish(odometry_transform_message_);
   }
+
+  if (realtime_joint_commands_publisher_)
+  {
+    joint_commands_message_.header.stamp = time;
+    for (std::size_t i = 0; i < 4; ++i)
+    {
+      joint_commands_message_.position[i] =
+        is_stop ? previous_steering_angles_[i] : wheel_command[i].steering_angle;
+      joint_commands_message_.velocity[i] = 0.0;
+      joint_commands_message_.position[4 + i] = 0.0;
+      joint_commands_message_.velocity[4 + i] = wheel_command[i].drive_angular_velocity;
+    }
+    realtime_joint_commands_publisher_->try_publish(joint_commands_message_);
+  }
+
   previous_publish_timestamp_ = time;
   return controller_interface::return_type::OK;
 }
