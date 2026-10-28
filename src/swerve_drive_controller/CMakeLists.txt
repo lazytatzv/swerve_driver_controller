@@ -13,6 +13,7 @@ set(THIS_PACKAGE_INCLUDE_DEPENDS
   geometry_msgs
   hardware_interface
   nav_msgs
+  std_msgs
   pluginlib
   rclcpp
   rclcpp_lifecycle

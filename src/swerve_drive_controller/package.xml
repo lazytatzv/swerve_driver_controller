@@ -25,6 +25,7 @@
   <depend>control_toolbox</depend>
   <depend>controller_interface</depend>
   <depend>nav_msgs</depend>
+  <depend>std_msgs</depend>
   <depend>pluginlib</depend>
   <depend>rclcpp</depend>
   <depend>rclcpp_lifecycle</depend>

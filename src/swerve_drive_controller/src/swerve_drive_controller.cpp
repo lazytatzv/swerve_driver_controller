@@ -257,6 +257,27 @@ CallbackReturn SwerveController::on_configure(const rclcpp_lifecycle::State & /*
     odometry_publisher_ = get_node()->create_publisher<nav_msgs::msg::Odometry>(
       DEFAULT_ODOMETRY_TOPIC, rclcpp::SystemDefaultsQoS());
 
+    disabled_wheels_sub_ = get_node()->create_subscription<std_msgs::msg::Int32MultiArray>(
+      "~/disabled_wheels", rclcpp::SystemDefaultsQoS(),
+      [this, logger](const std::shared_ptr<std_msgs::msg::Int32MultiArray> msg) -> void
+      {
+        std::array<bool, 4> new_active = {{true, true, true, true}};
+        user_disabled_wheels_.fill(false);
+        for (int idx : msg->data)
+        {
+          if (idx >= 0 && idx < 4)
+          {
+            new_active[idx] = false;
+            user_disabled_wheels_[idx] = true;
+            RCLCPP_WARN(
+              logger,
+              "[SwerveController] Wheel %d (%s) set to DISABLED (degraded mode active)",
+              idx, wheel_joint_names[idx].c_str());
+          }
+        }
+        active_wheels_ = new_active;
+      });
+
     realtime_odometry_publisher_ =
       std::make_shared<realtime_tools::RealtimePublisher<nav_msgs::msg::Odometry>>(
         odometry_publisher_);
@@ -436,6 +457,27 @@ controller_interface::return_type SwerveController::update_and_write_commands(
       wheel_command[i].drive_velocity = 0.0;
       wheel_command[i].drive_angular_velocity = 0.0;
       wheel_command[i].steering_angle = previous_steering_angles_[i];
+
+      // Auto-recovery: if a wheel was automatically disabled due to stall (and not user-disabled),
+      // allow recovery after resting for 1.5 seconds (150 cycles at 100Hz)
+      if (!user_disabled_wheels_[i] && !active_wheels_[i])
+      {
+        recovery_cooldown_counter_[i]++;
+        if (recovery_cooldown_counter_[i] > 150)
+        {
+          active_wheels_[i] = true;
+          stall_counter_[i] = 0;
+          recovery_cooldown_counter_[i] = 0;
+          RCLCPP_INFO(
+            logger,
+            "🔄 [SwerveController] Wheel %zu (%s) auto-recovered after stop! Re-enabled for driving.",
+            i, wheel_joint_names[i].c_str());
+        }
+      }
+      else
+      {
+        recovery_cooldown_counter_[i] = 0;
+      }
     }
   }
   else
@@ -484,6 +526,79 @@ controller_interface::return_type SwerveController::update_and_write_commands(
     // Apply velocity scaling
     wheel_command[i].drive_velocity *= velocity_scale;
     wheel_command[i].drive_angular_velocity *= velocity_scale;
+
+    // Fault-tolerant degraded mode: zero drive speed on disabled wheels
+    if (!active_wheels_[i])
+    {
+      wheel_command[i].drive_velocity = 0.0;
+      wheel_command[i].drive_angular_velocity = 0.0;
+    }
+  }
+
+  // Auto fault-detection: if motor is commanded > 0.30 m/s, but feedback velocity is < 0.05 m/s
+  // while at least 1 other wheel IS moving (> 0.15 m/s), or severe deviation (>50% error),
+  // increment stall counter
+  if (!is_stop && !params_.open_loop)
+  {
+    // 1. Reverse rotation safety warning (never auto-inverts in software to prevent runaway)
+    for (std::size_t i = 0; i < 4; i++)
+    {
+      if (active_wheels_[i] && wheel_handles_[i].has_value())
+      {
+        double cmd_v = wheel_command[i].drive_velocity;
+        double meas_v = wheel_handles_[i]->get_feedback() * params_.wheel_radius;
+        if (std::abs(cmd_v) > 0.30 && (cmd_v * meas_v < -0.10))
+        {
+          RCLCPP_WARN_THROTTLE(
+            logger, *get_node()->get_clock(), 1000,
+            "⚠️ [SwerveController] Wheel %zu (%s) appears to be ROTATING IN REVERSE! "
+            "(cmd: %.2f m/s, actual: %.2f m/s). Check motor phase wiring or ESC configuration!",
+            i, wheel_joint_names[i].c_str(), cmd_v, meas_v);
+        }
+      }
+    }
+
+    // 2. Locked rotor / stall detection and motor protection
+    int moving_wheels = 0;
+    for (std::size_t j = 0; j < 4; ++j)
+    {
+      if (wheel_handles_[j].has_value() &&
+          std::abs(wheel_handles_[j]->get_feedback() * params_.wheel_radius) > 0.15)
+      {
+        moving_wheels++;
+      }
+    }
+    for (std::size_t i = 0; i < 4; i++)
+    {
+      if (active_wheels_[i] && wheel_handles_[i].has_value() &&
+          std::abs(wheel_command[i].drive_velocity) > 0.30)
+      {
+        double cmd_speed = std::abs(wheel_command[i].drive_velocity);
+        double actual_speed = std::abs(wheel_handles_[i]->get_feedback() * params_.wheel_radius);
+        double speed_error = std::abs(cmd_speed - actual_speed);
+
+        // Fault detection: severe tracking deviation (>50% error or near-zero lock)
+        // while other wheels are driving properly
+        if ((speed_error > 0.5 * cmd_speed || actual_speed < 0.05) && moving_wheels >= 1)
+        {
+          stall_counter_[i]++;
+          if (stall_counter_[i] > 60) // ~0.6s at 100Hz
+          {
+            active_wheels_[i] = false;
+            wheel_command[i].drive_velocity = 0.0;
+            wheel_command[i].drive_angular_velocity = 0.0;
+            RCLCPP_ERROR(
+              logger,
+              "⚡ [SwerveController] CRITICAL: Motor on wheel %zu (%s) locked/stalled! High deviation (cmd: %.2f, actual: %.2f). Automatically cut drive power & activating degraded drive mode!",
+              i, wheel_joint_names[i].c_str(), cmd_speed, actual_speed);
+          }
+        }
+        else
+        {
+          stall_counter_[i] = 0;
+        }
+      }
+    }
   }
 
   for (std::size_t i = 0; i < 4; i++)
@@ -529,7 +644,7 @@ controller_interface::return_type SwerveController::update_and_write_commands(
     }
   }
   odometry_ = swerveDriveKinematics_.update_odometry(
-    velocity_array, steering_angle_array, update_dt.seconds());
+    velocity_array, steering_angle_array, update_dt.seconds(), active_wheels_);
 
   tf2::Quaternion orientation;
   orientation.setRPY(0.0, 0.0, odometry_.theta);
@@ -601,6 +716,11 @@ bool SwerveController::reset()
   subscriber_is_active_ = false;
   velocity_command_subscriber_.reset();
   velocity_command_unstamped_subscriber_.reset();
+  disabled_wheels_sub_.reset();
+  active_wheels_.fill(true);
+  user_disabled_wheels_.fill(false);
+  stall_counter_.fill(0);
+  recovery_cooldown_counter_.fill(0);
 
   TwistStamped zero_twist;
   zero_twist.header.stamp = get_node()->get_clock()->now();

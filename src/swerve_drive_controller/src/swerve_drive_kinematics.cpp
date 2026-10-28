@@ -209,33 +209,78 @@ std::array<WheelCommand, 4> SwerveDriveKinematics::optimize_wheel_commands(
 
 OdometryState SwerveDriveKinematics::update_odometry(
   const std::array<double, 4> & wheel_velocities, const std::array<double, 4> & steering_angles,
-  double dt)
+  double dt,
+  const std::array<bool, 4> & active_wheels)
 {
-  // Compute robot-centric velocity (assuming perfect wheel control)
-  double vx_sum = 0.0, vy_sum = 0.0, wz_sum = 0.0;
+  // Full rigid-body Least-Squares Odometry over active wheels (Fault-Tolerant Degraded Swerve)
+  // Solves [1 0 -yi; 0 1 xi] * [vx; vy; wz] = [vx_i; vy_i] via (A^T A)^-1 A^T b
+  std::size_t active_count = 0;
+  double sum_x = 0.0, sum_y = 0.0, sum_r2 = 0.0;
+  double Y0 = 0.0, Y1 = 0.0, Y2 = 0.0;
+
   for (std::size_t i = 0; i < 4; i++)
   {
+    if (!active_wheels[i])
+    {
+      continue;
+    }
+
     double vx = wheel_velocities[i] * std::cos(steering_angles[i]);
     double vy = wheel_velocities[i] * std::sin(steering_angles[i]);
+    double xi = wheel_positions_[i].first;
+    double yi = wheel_positions_[i].second;
 
-    // Accumulate contributions to linear and angular velocities
-    vx_sum += vx;
-    vy_sum += vy;
+    sum_x += xi;
+    sum_y += yi;
+    sum_r2 += (xi * xi + yi * yi);
 
-    wz_sum += (vy * wheel_positions_[i].first - vx * wheel_positions_[i].second);
+    Y0 += vx;
+    Y1 += vy;
+    Y2 += (vy * xi - vx * yi);
+    ++active_count;
   }
 
-  double vx_robot = vx_sum / 4.0;
-  double vy_robot = vy_sum / 4.0;
-
-  double wz_denominator = 0.0;
-  for (std::size_t i = 0; i < 4; i++)
+  if (active_count == 0)
   {
-    wz_denominator +=
-      (wheel_positions_[i].first * wheel_positions_[i].first +
-       wheel_positions_[i].second * wheel_positions_[i].second);
+    return odometry_;
   }
-  double wz_robot = wz_sum / wz_denominator;
+
+  double vx_robot = 0.0;
+  double vy_robot = 0.0;
+  double wz_robot = 0.0;
+
+  double N = static_cast<double>(active_count);
+  double m02 = -sum_y;
+  double m12 = sum_x;
+  double m22 = sum_r2;
+
+  double det = N * (N * m22 - m12 * m12 - m02 * m02);
+
+  if (active_count >= 2 && std::fabs(det) > 1e-9)
+  {
+    double c00 = N * m22 - m12 * m12;
+    double c01 = m02 * m12;
+    double c02 = -N * m02;
+
+    double c10 = m02 * m12;
+    double c11 = N * m22 - m02 * m02;
+    double c12 = -N * m12;
+
+    double c20 = -N * m02;
+    double c21 = -N * m12;
+    double c22 = N * N;
+
+    vx_robot = (c00 * Y0 + c01 * Y1 + c02 * Y2) / det;
+    vy_robot = (c10 * Y0 + c11 * Y1 + c12 * Y2) / det;
+    wz_robot = (c20 * Y0 + c21 * Y1 + c22 * Y2) / det;
+  }
+  else
+  {
+    // Fallback for single active wheel
+    vx_robot = Y0 / N;
+    vy_robot = Y1 / N;
+    wz_robot = 0.0;
+  }
 
   // Compute linear displacement in robot frame
   double dx_robot = vx_robot * dt;

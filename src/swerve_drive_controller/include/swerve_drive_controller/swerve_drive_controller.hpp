@@ -29,6 +29,7 @@
 #include "geometry_msgs/msg/twist_stamped.hpp"
 #include "hardware_interface/handle.hpp"
 #include "nav_msgs/msg/odometry.hpp"
+#include "std_msgs/msg/int32_multi_array.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp_lifecycle/state.hpp"
 #include "realtime_tools/realtime_publisher.hpp"
@@ -101,6 +102,8 @@ public:
 
   controller_interface::return_type update_and_write_commands(
     const rclcpp::Time & time, const rclcpp::Duration & period) override;
+
+  const std::array<bool, 4> & get_active_wheels() const { return active_wheels_; }
 
   CallbackReturn on_init() override;
 
@@ -234,6 +237,13 @@ protected:
   bool is_halted_ = false;
   bool reset();
   void halt();
+
+  // Fault-tolerant degraded swerve driving & stall protection
+  std::array<bool, 4> active_wheels_{{true, true, true, true}};
+  std::array<bool, 4> user_disabled_wheels_{{false, false, false, false}};
+  std::array<int, 4> stall_counter_{{0, 0, 0, 0}};
+  std::array<int, 4> recovery_cooldown_counter_{{0, 0, 0, 0}};
+  rclcpp::Subscription<std_msgs::msg::Int32MultiArray>::SharedPtr disabled_wheels_sub_ = nullptr;
 };
 
 }  // namespace swerve_drive_controller

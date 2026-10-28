@@ -111,7 +111,8 @@ public:
 
   OdometryState update_odometry(
     const std::array<double, 4> & wheel_velocities_, const std::array<double, 4> & steering_angles_,
-    double dt);
+    double dt,
+    const std::array<bool, 4> & active_wheels = {{true, true, true, true}});
 
   /**
    * @brief Reset inversion state history (used for hysteresis).
