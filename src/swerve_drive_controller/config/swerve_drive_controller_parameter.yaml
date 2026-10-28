@@ -203,3 +203,33 @@ swerve_drive_controller:
       description: "Whether to use TwistStamped (true) or Twist (false) for velocity commands.",
       read_only: true,
     }
+  enable_auto_fault_cutoff:
+    {
+      type: bool,
+      default_value: false,
+      description: "Whether to automatically cut drive power and activate degraded mode on motor stall detection. False by default to prevent false-positive cutoffs during operation.",
+      read_only: false,
+    }
+  stall_timeout_sec:
+    {
+      type: double,
+      default_value: 2.0,
+      description: "Timeout in seconds of continuous stall/lock condition before triggering fault detection.",
+      validation: { "swerve_drive_controller::gt<>": [0.0] },
+      read_only: false,
+    }
+  stall_speed_error_ratio:
+    {
+      type: double,
+      default_value: 0.85,
+      description: "Ratio of speed error to commanded speed (|cmd - actual| / |cmd|) required to consider wheel in stall (e.g. 0.85 = actual is <15% of commanded).",
+      read_only: false,
+    }
+  stall_min_velocity:
+    {
+      type: double,
+      default_value: 0.50,
+      description: "Minimum commanded drive speed (m/s) before stall detection is active.",
+      validation: { "swerve_drive_controller::gt<>": [0.0] },
+      read_only: false,
+    }

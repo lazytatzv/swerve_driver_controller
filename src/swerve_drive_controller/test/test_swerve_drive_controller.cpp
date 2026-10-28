@@ -409,7 +409,12 @@ TEST_F(SwerveDriveControllerTest, command_with_zero_timestamp_is_accepted_with_w
 
 TEST_F(SwerveDriveControllerTest, stall_detection_and_auto_recovery)
 {
-  ASSERT_EQ(InitController(), controller_interface::return_type::OK);
+  ASSERT_EQ(
+    InitController(
+      wheel_joint_names_, steering_joint_names_,
+      {rclcpp::Parameter("enable_auto_fault_cutoff", rclcpp::ParameterValue(true)),
+       rclcpp::Parameter("stall_timeout_sec", rclcpp::ParameterValue(0.5))}),
+    controller_interface::return_type::OK);
 
   rclcpp::executors::SingleThreadedExecutor executor;
   executor.add_node(controller_->get_node()->get_node_base_interface());
@@ -440,7 +445,7 @@ TEST_F(SwerveDriveControllerTest, stall_detection_and_auto_recovery)
   wheel_vel_states_[2] = 10.0;
   wheel_vel_states_[3] = 10.0;
 
-  // Step 70 cycles (> 60 cycles required for stall cutoff)
+  // Step 70 cycles (> 50 cycles required for 0.5s stall cutoff)
   for (int step = 0; step < 70; ++step)
   {
     ASSERT_EQ(
@@ -483,6 +488,56 @@ TEST_F(SwerveDriveControllerTest, stall_detection_and_auto_recovery)
   EXPECT_TRUE(controller_->get_active_wheels()[1]);
 
   // Deactivate and cleanup
+  state = controller_->get_node()->deactivate();
+  ASSERT_EQ(state.id(), State::PRIMARY_STATE_INACTIVE);
+  state = controller_->get_node()->cleanup();
+  ASSERT_EQ(state.id(), State::PRIMARY_STATE_UNCONFIGURED);
+  executor.cancel();
+}
+
+TEST_F(SwerveDriveControllerTest, stall_detection_disabled_by_default)
+{
+  // Default configuration has enable_auto_fault_cutoff: false
+  ASSERT_EQ(InitController(), controller_interface::return_type::OK);
+
+  rclcpp::executors::SingleThreadedExecutor executor;
+  executor.add_node(controller_->get_node()->get_node_base_interface());
+
+  auto state = controller_->get_node()->configure();
+  ASSERT_EQ(State::PRIMARY_STATE_INACTIVE, state.id());
+  assignResources();
+
+  state = controller_->get_node()->activate();
+  ASSERT_EQ(State::PRIMARY_STATE_ACTIVE, state.id());
+
+  waitForSetup();
+
+  publish_twist(1.0, 0.0, 0.0);
+  controller_->wait_for_twist(executor);
+
+  // Simulate Wheel 1 locked rotor while others drive
+  wheel_vel_states_[1] = 0.0;
+  wheel_vel_states_[0] = 10.0;
+  wheel_vel_states_[2] = 10.0;
+  wheel_vel_states_[3] = 10.0;
+
+  // Run 100 cycles (>1.0s)
+  for (int step = 0; step < 100; ++step)
+  {
+    ASSERT_EQ(
+      controller_->update_reference_from_subscribers(
+        rclcpp::Time(0, step * 10000000, RCL_ROS_TIME), rclcpp::Duration::from_seconds(0.01)),
+      controller_interface::return_type::OK);
+    ASSERT_EQ(
+      controller_->update_and_write_commands(
+        rclcpp::Time(0, step * 10000000, RCL_ROS_TIME), rclcpp::Duration::from_seconds(0.01)),
+      controller_interface::return_type::OK);
+  }
+
+  // Wheel 1 MUST remain active when cutoff is disabled!
+  EXPECT_TRUE(controller_->get_active_wheels()[1]);
+  EXPECT_GT(command_itfs_[1].get_optional().value(), 0.0);
+
   state = controller_->get_node()->deactivate();
   ASSERT_EQ(state.id(), State::PRIMARY_STATE_INACTIVE);
   state = controller_->get_node()->cleanup();
@@ -1138,6 +1193,80 @@ TEST(SwerveDriveKinematicsTest, test_degraded_3_wheel_fault_tolerant_odometry)
     EXPECT_NEAR(odom.vx, target_vx, 1e-3) << "Failed for pair: " << w1 << ", " << w2;
     EXPECT_NEAR(odom.vy, target_vy, 1e-3) << "Failed for pair: " << w1 << ", " << w2;
     EXPECT_NEAR(odom.wz, target_wz, 1e-3) << "Failed for pair: " << w1 << ", " << w2;
+  }
+}
+
+TEST(SwerveDriveKinematicsTest, test_steering_continuity_across_pi_and_multi_turn)
+{
+  SwerveDriveKinematics kinematics;
+  kinematics.calculate_wheel_position(0.36, 0.40);
+
+  const double limit = 2.0 * M_PI; // +/- 360 degrees (real robot config)
+
+  // Start with wheel angle past pi (e.g. 3.2 rad = ~183.3 deg)
+  std::array<double, 4> current_angles = {{3.2, 3.2, 3.2, 3.2}};
+
+  // Command a small continuous step to 3.25 rad (~186.2 deg)
+  double desired_angle = 3.25;
+  std::array<WheelCommand, 4> raw_cmds;
+  for (int i = 0; i < 4; ++i)
+  {
+    raw_cmds[i] = {angles::normalize_angle(desired_angle), 1.0, 1.0 / 0.035};
+  }
+
+  auto opt_cmds = kinematics.optimize_wheel_commands(
+    raw_cmds, current_angles, -limit, limit, true /* enable_steering_limits = true */);
+
+  for (int i = 0; i < 4; ++i)
+  {
+    // Must NOT wrap around or jump by 2*pi (e.g. jumping from +3.2 to -3.0)
+    double jump = std::abs(opt_cmds[i].steering_angle - current_angles[i]);
+    EXPECT_LT(jump, 0.2); // Smooth step ~0.05 rad
+    EXPECT_NEAR(opt_cmds[i].steering_angle, 3.25, 0.01);
+    EXPECT_GT(opt_cmds[i].drive_velocity, 0.0);
+  }
+}
+
+TEST(SwerveDriveKinematicsTest, test_multi_turn_720_sweep_no_discontinuities)
+{
+  SwerveDriveKinematics kinematics;
+  kinematics.calculate_wheel_position(0.36, 0.40);
+
+  const double limit = 2.0 * M_PI; // +/- 360 degrees
+
+  std::array<double, 4> current_angles = {{0.0, 0.0, 0.0, 0.0}};
+
+  // Continuous sweep forward and backward through 720 degrees
+  for (int deg = -360; deg <= 360; deg += 5)
+  {
+    double rad = deg * M_PI / 180.0;
+    double vx = 1.5 * std::cos(rad);
+    double vy = 1.5 * std::sin(rad);
+
+    auto raw_cmds = kinematics.compute_wheel_commands(vx, vy, 0.0, 0.035);
+    auto opt_cmds = kinematics.optimize_wheel_commands(raw_cmds, current_angles, -limit, limit, true);
+
+    for (int i = 0; i < 4; ++i)
+    {
+      // Angle must NEVER exceed limits
+      EXPECT_GE(opt_cmds[i].steering_angle, -limit - 1e-4);
+      EXPECT_LE(opt_cmds[i].steering_angle, limit + 1e-4);
+
+      // Transition step must be smooth (no 2*pi jumps, at most pi when drive reverses at boundary)
+      if (deg > -360)
+      {
+        double step_change = std::abs(opt_cmds[i].steering_angle - current_angles[i]);
+        EXPECT_LE(step_change, M_PI + 1e-3);
+      }
+
+      // Ground velocity vector must match commanded direction
+      double vx_actual = opt_cmds[i].drive_velocity * std::cos(opt_cmds[i].steering_angle);
+      double vy_actual = opt_cmds[i].drive_velocity * std::sin(opt_cmds[i].steering_angle);
+      EXPECT_NEAR(vx_actual, vx, 1e-3);
+      EXPECT_NEAR(vy_actual, vy, 1e-3);
+
+      current_angles[i] = opt_cmds[i].steering_angle;
+    }
   }
 }
 

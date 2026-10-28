@@ -364,9 +364,15 @@ CallbackReturn SwerveController::on_activate(const rclcpp_lifecycle::State &)
       RCLCPP_ERROR(logger, "ERROR IN FETCHING axle handle for: %s", axle_joint_names[i].c_str());
       return CallbackReturn::ERROR;
     }
-    axle_handles_[i]->set_position(0.0);
-    previous_steering_angles_[i] = axle_handles_[i]->get_feedback();
+    double init_pos = axle_handles_[i]->get_feedback();
+    previous_steering_angles_[i] = init_pos;
+    axle_handles_[i]->set_position(init_pos);
   }
+
+  stall_counter_.fill(0);
+  recovery_cooldown_counter_.fill(0);
+  reverse_warn_counter_.fill(0);
+  reverse_warn_counter_.fill(0);
 
   is_halted_ = false;
   subscriber_is_active_ = true;
@@ -457,10 +463,11 @@ controller_interface::return_type SwerveController::update_and_write_commands(
       wheel_command[i].drive_velocity = 0.0;
       wheel_command[i].drive_angular_velocity = 0.0;
       wheel_command[i].steering_angle = previous_steering_angles_[i];
+      reverse_warn_counter_[i] = 0;
 
       // Auto-recovery: if a wheel was automatically disabled due to stall (and not user-disabled),
       // allow recovery after resting for 1.5 seconds (150 cycles at 100Hz)
-      if (!user_disabled_wheels_[i] && !active_wheels_[i])
+      if (params_.enable_auto_fault_cutoff && !user_disabled_wheels_[i] && !active_wheels_[i])
       {
         recovery_cooldown_counter_[i]++;
         if (recovery_cooldown_counter_[i] > 150)
@@ -476,6 +483,10 @@ controller_interface::return_type SwerveController::update_and_write_commands(
       }
       else
       {
+        if (active_wheels_[i])
+        {
+          stall_counter_[i] = 0;
+        }
         recovery_cooldown_counter_[i] = 0;
       }
     }
@@ -535,62 +546,102 @@ controller_interface::return_type SwerveController::update_and_write_commands(
     }
   }
 
-  // Auto fault-detection: if motor is commanded > 0.30 m/s, but feedback velocity is < 0.05 m/s
-  // while at least 1 other wheel IS moving (> 0.15 m/s), or severe deviation (>50% error),
-  // increment stall counter
+  // Auto fault-detection and stall protection
   if (!is_stop && !params_.open_loop)
   {
     // 1. Reverse rotation safety warning (never auto-inverts in software to prevent runaway)
+    // Only check when:
+    // a) Steering angle is aligned (|steering_error| < 0.35 rad)
+    // b) Commanded speed is substantial (|cmd_v| > 0.50 m/s)
+    // c) Reverse condition persists for > 0.8s (80 cycles at 100Hz) to ignore braking/reversal transients
     for (std::size_t i = 0; i < 4; i++)
     {
       if (active_wheels_[i] && wheel_handles_[i].has_value())
       {
         double cmd_v = wheel_command[i].drive_velocity;
         double meas_v = wheel_handles_[i]->get_feedback() * params_.wheel_radius;
-        if (std::abs(cmd_v) > 0.30 && (cmd_v * meas_v < -0.10))
+        double steering_error = std::abs(
+          angles::shortest_angular_distance(
+            current_steering_angles[i], wheel_command[i].steering_angle));
+
+        if (steering_error < 0.35 && std::abs(cmd_v) > 0.50 && (cmd_v * meas_v < -0.15))
         {
-          RCLCPP_WARN_THROTTLE(
-            logger, *get_node()->get_clock(), 1000,
-            "⚠️ [SwerveController] Wheel %zu (%s) appears to be ROTATING IN REVERSE! "
-            "(cmd: %.2f m/s, actual: %.2f m/s). Check motor phase wiring or ESC configuration!",
-            i, wheel_joint_names[i].c_str(), cmd_v, meas_v);
+          reverse_warn_counter_[i]++;
+          if (reverse_warn_counter_[i] > 80)
+          {
+            RCLCPP_WARN_THROTTLE(
+              logger, *get_node()->get_clock(), 2000,
+              "⚠️ [SwerveController] Wheel %zu (%s) appears to be ROTATING IN REVERSE! "
+              "(cmd: %.2f m/s, actual: %.2f m/s). Check motor phase wiring or ESC configuration!",
+              i, wheel_joint_names[i].c_str(), cmd_v, meas_v);
+          }
+        }
+        else
+        {
+          reverse_warn_counter_[i] = 0;
         }
       }
     }
 
     // 2. Locked rotor / stall detection and motor protection
+    // Count how many wheels are clearly driving
     int moving_wheels = 0;
     for (std::size_t j = 0; j < 4; ++j)
     {
       if (wheel_handles_[j].has_value() &&
-          std::abs(wheel_handles_[j]->get_feedback() * params_.wheel_radius) > 0.15)
+          std::abs(wheel_handles_[j]->get_feedback() * params_.wheel_radius) > 0.20)
       {
         moving_wheels++;
       }
     }
+
+    int stall_limit_cycles = std::max(10, static_cast<int>(params_.stall_timeout_sec * 100.0));
+
     for (std::size_t i = 0; i < 4; i++)
     {
-      if (active_wheels_[i] && wheel_handles_[i].has_value() &&
-          std::abs(wheel_command[i].drive_velocity) > 0.30)
+      if (active_wheels_[i] && wheel_handles_[i].has_value())
       {
         double cmd_speed = std::abs(wheel_command[i].drive_velocity);
         double actual_speed = std::abs(wheel_handles_[i]->get_feedback() * params_.wheel_radius);
         double speed_error = std::abs(cmd_speed - actual_speed);
+        double steering_error = std::abs(
+          angles::shortest_angular_distance(
+            current_steering_angles[i], wheel_command[i].steering_angle));
 
-        // Fault detection: severe tracking deviation (>50% error or near-zero lock)
-        // while other wheels are driving properly
-        if ((speed_error > 0.5 * cmd_speed || actual_speed < 0.05) && moving_wheels >= 1)
+        // Only evaluate stall if:
+        // 1) Commanded drive velocity exceeds threshold (cmd_speed >= stall_min_velocity)
+        // 2) Steering angle has aligned (steering_error < 0.35 rad)
+        // 3) At least 2 other wheels are moving (> 0.20 m/s), indicating the robot as a whole is driving
+        // 4) Severe stall: motor locked (actual_speed < 0.08 m/s) OR tracking error ratio exceeds stall_speed_error_ratio
+        bool is_stalled = (cmd_speed >= params_.stall_min_velocity) &&
+                          (steering_error < 0.35) &&
+                          (moving_wheels >= 2) &&
+                          (actual_speed < 0.08 || (speed_error / cmd_speed > params_.stall_speed_error_ratio));
+
+        if (is_stalled)
         {
           stall_counter_[i]++;
-          if (stall_counter_[i] > 60) // ~0.6s at 100Hz
+          if (stall_counter_[i] > stall_limit_cycles)
           {
-            active_wheels_[i] = false;
-            wheel_command[i].drive_velocity = 0.0;
-            wheel_command[i].drive_angular_velocity = 0.0;
-            RCLCPP_ERROR(
-              logger,
-              "⚡ [SwerveController] CRITICAL: Motor on wheel %zu (%s) locked/stalled! High deviation (cmd: %.2f, actual: %.2f). Automatically cut drive power & activating degraded drive mode!",
-              i, wheel_joint_names[i].c_str(), cmd_speed, actual_speed);
+            if (params_.enable_auto_fault_cutoff)
+            {
+              active_wheels_[i] = false;
+              wheel_command[i].drive_velocity = 0.0;
+              wheel_command[i].drive_angular_velocity = 0.0;
+              RCLCPP_ERROR(
+                logger,
+                "⚡ [SwerveController] CRITICAL: Motor on wheel %zu (%s) locked/stalled! "
+                "(cmd: %.2f m/s, actual: %.2f m/s). Automatically cut drive power & activating degraded drive mode!",
+                i, wheel_joint_names[i].c_str(), cmd_speed, actual_speed);
+            }
+            else
+            {
+              RCLCPP_WARN_THROTTLE(
+                logger, *get_node()->get_clock(), 2000,
+                "⚠️ [SwerveController] Wheel %zu (%s) potential stall detected "
+                "(cmd: %.2f m/s, actual: %.2f m/s). Auto-cutoff disabled (enable_auto_fault_cutoff: false).",
+                i, wheel_joint_names[i].c_str(), cmd_speed, actual_speed);
+            }
           }
         }
         else
@@ -721,6 +772,7 @@ bool SwerveController::reset()
   user_disabled_wheels_.fill(false);
   stall_counter_.fill(0);
   recovery_cooldown_counter_.fill(0);
+  reverse_warn_counter_.fill(0);
 
   TwistStamped zero_twist;
   zero_twist.header.stamp = get_node()->get_clock()->now();

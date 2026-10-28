@@ -243,6 +243,7 @@ protected:
   std::array<bool, 4> user_disabled_wheels_{{false, false, false, false}};
   std::array<int, 4> stall_counter_{{0, 0, 0, 0}};
   std::array<int, 4> recovery_cooldown_counter_{{0, 0, 0, 0}};
+  std::array<int, 4> reverse_warn_counter_{{0, 0, 0, 0}};
   rclcpp::Subscription<std_msgs::msg::Int32MultiArray>::SharedPtr disabled_wheels_sub_ = nullptr;
 };
 

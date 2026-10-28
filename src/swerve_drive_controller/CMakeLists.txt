@@ -100,6 +100,12 @@ if(BUILD_TESTING)
     controller_manager::controller_manager
     ros2_control_test_assets::ros2_control_test_assets
   )
+
+  set_tests_properties(
+    test_swerve_drive_controller
+    test_load_swerve_drive_controller
+    PROPERTIES ENVIRONMENT "RMW_IMPLEMENTATION=rmw_fastrtps_cpp"
+  )
 endif()
 
 install(
